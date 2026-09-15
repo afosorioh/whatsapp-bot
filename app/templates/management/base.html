@@ -38,11 +38,40 @@
             align-items: center;
             justify-content: space-between;
             gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
         }
 
         .topbar-title {
             font-weight: 700;
             letter-spacing: .2px;
+        }
+
+        .topbar-nav {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .topbar-nav a {
+            color: #e5e7eb;
+            text-decoration: none;
+            padding: 7px 10px;
+            border-radius: 7px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .topbar-nav a:hover {
+            background: #1f2937;
+            color: white;
         }
 
         .container {
@@ -103,6 +132,7 @@
         @media (max-width: 720px) {
             .container { width: min(100% - 18px, 1120px); margin-top: 12px; }
             .topbar { padding: 12px; }
+            .topbar-left { gap: 10px; }
         }
     </style>
     {% block head %}{% endblock %}
@@ -110,7 +140,14 @@
 <body>
     {% if session.get('chatbot_management_authenticated') %}
     <header class="topbar">
-        <div class="topbar-title">Cervecería Libre · WhatsApp Inbox</div>
+        <div class="topbar-left">
+            <div class="topbar-title">Cervecería Libre · WhatsApp Management</div>
+            <nav class="topbar-nav" aria-label="Management navigation">
+                <a href="{{ url_for('management.inbox') }}">Inbox</a>
+                <a href="{{ url_for('management_inventory.list_inventory') }}">Inventory</a>
+            </nav>
+        </div>
+
         <form class="logout-form" action="{{ url_for('management.logout') }}" method="post">
             <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
             <button class="btn btn-secondary" type="submit">Sign out</button>
