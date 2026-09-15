@@ -1,7 +1,14 @@
-from flask import Blueprint, request, jsonify, current_app
+import json
+from datetime import datetime
+
+from flask import Blueprint, current_app, jsonify, request
+from sqlalchemy import or_
+
+from app import db
+from app.models import Conversation, Customer, Message
 from app.services.bot_service import process_incoming_message
 from app.services.whatsapp_service import send_whatsapp_message
-import json
+
 
 webhook_bp = Blueprint("webhook", __name__, url_prefix="/chatbot")
 
@@ -21,17 +28,6 @@ def verify_webhook():
 
 
 def _extract_contact_data(value):
-    """
-    Extrae los datos humanos del contacto que Meta incluya en el webhook.
-
-    Meta puede entregar:
-      - wa_id: número de WhatsApp
-      - user_id: identificador BSUID (CO.xxxxx)
-      - profile.name
-      - profile.username
-
-    No todos los campos están presentes en todos los mensajes.
-    """
     contacts = value.get("contacts", [])
 
     if not contacts:
@@ -54,10 +50,6 @@ def _extract_contact_data(value):
 
 
 def _normalize_customer_phone(value):
-    """
-    Devuelve solo dígitos si value realmente parece un teléfono.
-    Evita guardar identificadores BSUID (CO.xxxxx) como teléfono.
-    """
     if not value:
         return None
 
@@ -68,11 +60,95 @@ def _normalize_customer_phone(value):
 
     digits = "".join(ch for ch in value if ch.isdigit())
 
-    # Un número internacional real debe tener una longitud razonable.
     if 8 <= len(digits) <= 15:
         return digits
 
     return None
+
+
+def _find_active_handoff_conversation(
+    recipient,
+    customer_phone=None,
+    from_user_id=None,
+):
+    identifiers = {
+        str(value).strip()
+        for value in (recipient, customer_phone, from_user_id)
+        if value
+    }
+
+    filters = [
+        Conversation.whatsapp_number.in_(identifiers),
+    ]
+
+    if customer_phone:
+        filters.append(Customer.phone == customer_phone)
+        filters.append(Customer.whatsapp_number == customer_phone)
+
+    if from_user_id:
+        filters.append(Customer.whatsapp_number == from_user_id)
+
+    return (
+        Conversation.query
+        .outerjoin(Customer, Customer.id == Conversation.customer_id)
+        .filter(
+            Conversation.human_handoff.is_(True),
+            or_(*filters),
+        )
+        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        .first()
+    )
+
+
+def _store_handoff_message(
+    conversation,
+    recipient,
+    incoming_text,
+    msg,
+    customer_phone=None,
+    customer_username=None,
+    profile_name=None,
+):
+    context = dict(conversation.context or {})
+
+    if customer_phone:
+        context["customer_phone"] = str(customer_phone).strip()
+
+    if customer_username:
+        context["customer_username"] = str(customer_username).strip()
+
+    if profile_name:
+        context["profile_name"] = str(profile_name).strip()
+
+    conversation.context = context
+
+    # Keep the most recent valid recipient identifier for advisor replies.
+    if recipient:
+        conversation.whatsapp_number = str(recipient).strip()
+
+    conversation.updated_at = datetime.utcnow()
+
+    message = Message(
+        conversation_id=conversation.id,
+        whatsapp_message_id=msg.get("id"),
+        direction="inbound",
+        message_type=msg.get("type", "text"),
+        content=incoming_text,
+        raw_payload=msg,
+    )
+
+    db.session.add(message)
+    db.session.commit()
+
+    print(
+        "HUMAN HANDOFF MESSAGE STORED:",
+        {
+            "conversation_id": conversation.id,
+            "recipient": conversation.whatsapp_number,
+            "message_id": message.id,
+        },
+        flush=True,
+    )
 
 
 @webhook_bp.route("/webhook", methods=["POST"])
@@ -82,7 +158,7 @@ def receive_webhook():
     print(
         "WEBHOOK RECIBIDO:",
         json.dumps(data, ensure_ascii=False),
-        flush=True
+        flush=True,
     )
 
     try:
@@ -90,12 +166,11 @@ def receive_webhook():
             for change in entry.get("changes", []):
                 value = change.get("value", {})
 
-                # Los statuses corresponden a mensajes salientes.
                 for status in value.get("statuses", []):
                     print(
                         "WHATSAPP STATUS:",
                         json.dumps(status, ensure_ascii=False),
-                        flush=True
+                        flush=True,
                     )
 
                 contact_data = _extract_contact_data(value)
@@ -107,8 +182,6 @@ def receive_webhook():
                         or contact_data["user_id"]
                     )
 
-                    # Identificador técnico usado para responder al usuario.
-                    # Si Meta entrega "from", usamos teléfono; si no, BSUID.
                     recipient = (
                         from_number
                         or from_user_id
@@ -118,12 +191,10 @@ def receive_webhook():
                     if not recipient:
                         print(
                             "Webhook message ignored: no recipient identifier",
-                            flush=True
+                            flush=True,
                         )
                         continue
 
-                    # Número humano para entregárselo al asesor.
-                    # Puede venir en messages[].from o contacts[].wa_id.
                     customer_phone = (
                         _normalize_customer_phone(from_number)
                         or _normalize_customer_phone(contact_data["wa_id"])
@@ -141,9 +212,7 @@ def receive_webhook():
                     incoming_text = None
 
                     if msg_type == "text":
-                        incoming_text = (
-                            msg.get("text", {}).get("body")
-                        )
+                        incoming_text = msg.get("text", {}).get("body")
 
                     elif msg_type == "interactive":
                         interactive = msg.get("interactive", {})
@@ -165,6 +234,24 @@ def receive_webhook():
                     if not incoming_text:
                         continue
 
+                    handoff_conversation = _find_active_handoff_conversation(
+                        recipient,
+                        customer_phone=customer_phone,
+                        from_user_id=from_user_id,
+                    )
+
+                    if handoff_conversation:
+                        _store_handoff_message(
+                            handoff_conversation,
+                            recipient,
+                            incoming_text,
+                            msg,
+                            customer_phone=customer_phone,
+                            customer_username=customer_username,
+                            profile_name=profile_name,
+                        )
+                        continue
+
                     reply = process_incoming_message(
                         recipient,
                         incoming_text,
@@ -176,10 +263,11 @@ def receive_webhook():
                     if reply:
                         send_whatsapp_message(recipient, reply)
 
-    except Exception as e:
+    except Exception as exc:
+        db.session.rollback()
         print(
-            f"Webhook error: {type(e).__name__}: {e}",
-            flush=True
+            f"Webhook error: {type(exc).__name__}: {exc}",
+            flush=True,
         )
 
     return jsonify({"status": "ok"}), 200
@@ -199,6 +287,33 @@ def simulate_message():
             "error": "phone and message are required"
         }), 400
 
+    handoff_conversation = _find_active_handoff_conversation(
+        phone,
+        customer_phone=_normalize_customer_phone(phone),
+    )
+
+    if handoff_conversation:
+        simulated_msg = {
+            "id": None,
+            "type": "text",
+            "text": {"body": message},
+        }
+        _store_handoff_message(
+            handoff_conversation,
+            phone,
+            message,
+            simulated_msg,
+            customer_phone=_normalize_customer_phone(phone),
+            customer_username=username,
+            profile_name=profile_name,
+        )
+        return jsonify({
+            "phone": phone,
+            "incoming": message,
+            "reply": None,
+            "human_handoff": True,
+        })
+
     reply = process_incoming_message(
         phone,
         message,
@@ -211,4 +326,5 @@ def simulate_message():
         "phone": phone,
         "incoming": message,
         "reply": reply,
+        "human_handoff": False,
     })
