@@ -35,4 +35,7 @@ def create_app():
     from app.routes.management import management_bp
     app.register_blueprint(management_bp)
 
+    from app.routes.management_inventory import management_inventory_bp
+    app.register_blueprint(management_inventory_bp)
+
     return app
