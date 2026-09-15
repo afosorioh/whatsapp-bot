@@ -1,0 +1,48 @@
+{% extends "management/base.html" %}
+
+{% block title %}Advisor Inbox{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;">
+    <div>
+        <h1 style="margin:0 0 5px;">Pending conversations</h1>
+        <div class="muted">Customers currently assigned to a human advisor.</div>
+    </div>
+    <span style="background:#dcfae6;color:#067647;padding:7px 11px;border-radius:999px;font-weight:700;">
+        {{ items|length }} open
+    </span>
+</div>
+
+<div class="card" style="overflow:hidden;">
+    {% if not items %}
+        <div style="padding:34px;text-align:center;" class="muted">
+            No conversations are waiting for an advisor.
+        </div>
+    {% else %}
+        {% for item in items %}
+            <a
+                href="{{ url_for('management.conversation_detail', conversation_id=item.conversation.id) }}"
+                style="display:block;text-decoration:none;padding:16px 18px;border-bottom:1px solid var(--border);"
+            >
+                <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;">
+                    <div style="min-width:0;">
+                        <div style="font-weight:750;font-size:17px;">{{ item.name }}</div>
+                        <div class="muted" style="margin-top:3px;">{{ item.contact }}</div>
+                        {% if item.last_message %}
+                            <div style="margin-top:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:760px;">
+                                {% if item.last_message.direction == 'outbound' %}<strong>You:</strong> {% endif %}
+                                {{ item.last_message.content }}
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="muted" style="white-space:nowrap;font-size:13px;">
+                        {% if item.last_message and item.last_message.created_at %}
+                            {{ item.last_message.created_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% endif %}
+                    </div>
+                </div>
+            </a>
+        {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}
