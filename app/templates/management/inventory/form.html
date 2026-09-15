@@ -1,0 +1,133 @@
+{% extends "management/base.html" %}
+
+{% block title %}{{ 'Edit product' if product else 'New product' }} · WhatsApp Management{% endblock %}
+
+{% block head %}
+<style>
+    .form-card {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 22px;
+    }
+
+    .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+    }
+
+    .field { margin-bottom: 16px; }
+    .field.full { grid-column: 1 / -1; }
+
+    .field label {
+        display: block;
+        font-weight: 650;
+        margin-bottom: 6px;
+    }
+
+    .field input,
+    .field textarea {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 11px;
+        font: inherit;
+        background: white;
+    }
+
+    .field textarea {
+        min-height: 120px;
+        resize: vertical;
+    }
+
+    .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 4px 0 20px;
+    }
+
+    .form-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    @media (max-width: 680px) {
+        .form-grid { grid-template-columns: 1fr; }
+    }
+</style>
+{% endblock %}
+
+{% macro value_for(name, default='') %}
+    {%- if form_data is not none -%}
+        {{- form_data.get(name, default) -}}
+    {%- elif product -%}
+        {{- (product|attr(name)) if (product|attr(name)) is not none else default -}}
+    {%- else -%}
+        {{- default -}}
+    {%- endif -%}
+{% endmacro %}
+
+{% block content %}
+<div style="margin-bottom:12px;">
+    <a href="{{ url_for('management_inventory.list_inventory') }}" class="muted" style="text-decoration:none;">← Back to inventory</a>
+</div>
+
+<section class="card form-card">
+    <h1 style="margin-top:0;">{{ 'Edit product' if product else 'New product' }}</h1>
+    <p class="muted">This product is stored directly in the chatbot database and can be offered in the WhatsApp product flow.</p>
+
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
+
+        <div class="form-grid">
+            <div class="field">
+                <label for="name">Name</label>
+                <input id="name" type="text" name="name" required value="{{ value_for('name') }}">
+            </div>
+
+            <div class="field">
+                <label for="style">Style</label>
+                <input id="style" type="text" name="style" value="{{ value_for('style') }}">
+            </div>
+
+            <div class="field">
+                <label for="presentation">Presentation</label>
+                <input id="presentation" type="text" name="presentation" value="{{ value_for('presentation', 'Lata 330 ml') }}">
+            </div>
+
+            <div class="field">
+                <label for="volume_ml">Volume (ml)</label>
+                <input id="volume_ml" type="number" min="1" name="volume_ml" value="{{ value_for('volume_ml', '330') }}">
+            </div>
+
+            <div class="field">
+                <label for="price">Price (COP)</label>
+                <input id="price" type="number" min="0" step="0.01" name="price" required value="{{ value_for('price') }}">
+            </div>
+
+            <div class="field">
+                <label for="stock_quantity">Stock</label>
+                <input id="stock_quantity" type="number" min="0" step="0.01" name="stock_quantity" value="{{ value_for('stock_quantity', '0') }}">
+            </div>
+
+            <div class="field full">
+                <label for="description">Description</label>
+                <textarea id="description" name="description">{{ value_for('description') }}</textarea>
+            </div>
+        </div>
+
+        {% set active_checked = (form_data.get('active') == 'on') if form_data is not none else (product.active if product else true) %}
+        <label class="checkbox-row" for="active">
+            <input id="active" type="checkbox" name="active" {% if active_checked %}checked{% endif %}>
+            <span>Active</span>
+        </label>
+
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Save</button>
+            <a class="btn btn-secondary" href="{{ url_for('management_inventory.list_inventory') }}">Cancel</a>
+        </div>
+    </form>
+</section>
+{% endblock %}
