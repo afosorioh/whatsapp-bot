@@ -15,6 +15,7 @@ from flask import (
     session,
     url_for,
 )
+from sqlalchemy import or_
 
 from app import db
 from app.models import Conversation, Customer, Message
@@ -119,6 +120,95 @@ def _serialize_message(message):
     }
 
 
+def _conversation_identifiers(conversation):
+    context = dict(conversation.context or {})
+    customer = _conversation_customer(conversation)
+
+    identifiers = {
+        str(value).strip()
+        for value in (
+            conversation.whatsapp_number,
+            context.get("customer_phone"),
+            customer.whatsapp_number if customer else None,
+            customer.phone if customer else None,
+        )
+        if value
+    }
+
+    phone_identifiers = {
+        value.lstrip("+")
+        for value in identifiers
+        if not value.startswith("CO.")
+    }
+
+    return identifiers, phone_identifiers
+
+
+def _previous_advisor_conversations(conversation):
+    identifiers, phone_identifiers = _conversation_identifiers(conversation)
+
+    relation_filters = []
+
+    if conversation.customer_id:
+        relation_filters.append(
+            Conversation.customer_id == conversation.customer_id
+        )
+
+    if identifiers:
+        relation_filters.append(
+            Conversation.whatsapp_number.in_(identifiers)
+        )
+        relation_filters.append(
+            Customer.whatsapp_number.in_(identifiers)
+        )
+
+    if phone_identifiers:
+        relation_filters.append(
+            Customer.phone.in_(phone_identifiers)
+        )
+
+    if not relation_filters:
+        return []
+
+    return (
+        Conversation.query
+        .outerjoin(Customer, Customer.id == Conversation.customer_id)
+        .filter(
+            Conversation.id != conversation.id,
+            Conversation.current_state == "CLOSED",
+            or_(*relation_filters),
+        )
+        .order_by(
+            Conversation.updated_at.desc(),
+            Conversation.id.desc(),
+        )
+        .all()
+    )
+
+
+def _history_item(conversation):
+    first_message = (
+        Message.query
+        .filter_by(conversation_id=conversation.id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .first()
+    )
+    last_message = (
+        Message.query
+        .filter_by(conversation_id=conversation.id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .first()
+    )
+
+    return {
+        "conversation": conversation,
+        "name": _display_name(conversation),
+        "contact": _display_contact(conversation),
+        "first_message": first_message,
+        "last_message": last_message,
+    }
+
+
 @management_bp.context_processor
 def inject_management_context():
     return {
@@ -174,7 +264,10 @@ def logout():
 def inbox():
     conversations = (
         Conversation.query
-        .filter(Conversation.human_handoff.is_(True))
+        .filter(
+            Conversation.human_handoff.is_(True),
+            Conversation.current_state != "CLOSED",
+        )
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .all()
     )
@@ -217,13 +310,63 @@ def conversation_detail(conversation_id):
         .all()
     )
 
+    history_items = [
+        _history_item(item)
+        for item in _previous_advisor_conversations(conversation)
+    ]
+
     return render_template(
         "management/conversation.html",
         conversation=conversation,
         customer_name=_display_name(conversation),
         customer_contact=_display_contact(conversation),
         messages=messages,
+        history_items=history_items,
     )
+
+
+@management_bp.route(
+    "/conversation/<int:conversation_id>/history/<int:history_id>"
+)
+@management_required
+def conversation_history(conversation_id, history_id):
+    conversation = db.session.get(Conversation, conversation_id)
+    history = db.session.get(Conversation, history_id)
+
+    if not conversation or not history:
+        abort(404)
+
+    allowed_ids = {
+        item.id
+        for item in _previous_advisor_conversations(conversation)
+    }
+
+    if history.id not in allowed_ids:
+        abort(404)
+
+    messages = (
+        Message.query
+        .filter_by(conversation_id=history.id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+    return jsonify({
+        "conversation_id": history.id,
+        "name": _display_name(history),
+        "contact": _display_contact(history),
+        "created_at": (
+            history.created_at.isoformat()
+            if history.created_at
+            else None
+        ),
+        "updated_at": (
+            history.updated_at.isoformat()
+            if history.updated_at
+            else None
+        ),
+        "messages": [_serialize_message(message) for message in messages],
+    })
 
 
 @management_bp.route(
@@ -250,7 +393,10 @@ def conversation_messages(conversation_id):
 
     return jsonify({
         "conversation_id": conversation.id,
-        "human_handoff": conversation.human_handoff,
+        "human_handoff": (
+            conversation.human_handoff
+            and conversation.current_state != "CLOSED"
+        ),
         "messages": [_serialize_message(message) for message in messages],
     })
 
@@ -269,7 +415,10 @@ def send_message(conversation_id):
     if not conversation:
         abort(404)
 
-    if not conversation.human_handoff:
+    if (
+        not conversation.human_handoff
+        or conversation.current_state == "CLOSED"
+    ):
         flash("This conversation is no longer assigned to an advisor.", "warning")
         return redirect(
             url_for(
@@ -307,9 +456,13 @@ def send_message(conversation_id):
         )
 
     whatsapp_message_id = None
-    messages = response.get("messages", []) if isinstance(response, dict) else []
-    if messages:
-        whatsapp_message_id = messages[0].get("id")
+    response_messages = (
+        response.get("messages", [])
+        if isinstance(response, dict)
+        else []
+    )
+    if response_messages:
+        whatsapp_message_id = response_messages[0].get("id")
 
     message = Message(
         conversation_id=conversation.id,
@@ -357,11 +510,18 @@ def close_conversation(conversation_id):
         if context.get(key)
     }
 
+    # Keep this record as an archived advisor session. human_handoff stays
+    # True so bot_service will create a fresh non-handoff conversation on
+    # the customer's next message. The webhook explicitly ignores CLOSED
+    # handoff records.
     conversation.context = identity_context
-    conversation.current_state = "MAIN_MENU"
-    conversation.human_handoff = False
+    conversation.current_state = "CLOSED"
+    conversation.human_handoff = True
     conversation.updated_at = datetime.utcnow()
     db.session.commit()
 
-    flash("Conversation closed. The chatbot will handle the next message.", "success")
+    flash(
+        "Conversation closed. The chatbot will handle the next message.",
+        "success"
+    )
     return redirect(url_for("management.inbox"))

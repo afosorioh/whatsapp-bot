@@ -93,6 +93,7 @@ def _find_active_handoff_conversation(
         .outerjoin(Customer, Customer.id == Conversation.customer_id)
         .filter(
             Conversation.human_handoff.is_(True),
+            Conversation.current_state != "CLOSED",
             or_(*filters),
         )
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
@@ -122,7 +123,6 @@ def _store_handoff_message(
 
     conversation.context = context
 
-    # Keep the most recent valid recipient identifier for advisor replies.
     if recipient:
         conversation.whatsapp_number = str(recipient).strip()
 
