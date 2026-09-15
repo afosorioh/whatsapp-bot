@@ -42,6 +42,27 @@ def _parse_decimal(value, field_name, required=False):
     return number
 
 
+def _parse_stock_quantity(value):
+    """Validate beer inventory as non-negative whole units."""
+    raw = (value or "").strip()
+
+    if not raw:
+        return 0
+
+    try:
+        number = Decimal(raw.replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError("Stock must be an integer.") from exc
+
+    if number < 0:
+        raise ValueError("Stock cannot be negative.")
+
+    if number != number.to_integral_value():
+        raise ValueError("Stock must be a whole number of units.")
+
+    return int(number)
+
+
 def _parse_volume(value):
     raw = (value or "").strip()
 
@@ -79,9 +100,8 @@ def _apply_form(product):
         "Price",
         required=True,
     )
-    product.stock_quantity = _parse_decimal(
-        request.form.get("stock_quantity"),
-        "Stock",
+    product.stock_quantity = _parse_stock_quantity(
+        request.form.get("stock_quantity")
     )
     product.active = request.form.get("active") == "on"
 
@@ -118,7 +138,7 @@ def new_product():
     product = Product(
         name="",
         price=Decimal("0"),
-        stock_quantity=Decimal("0"),
+        stock_quantity=0,
         active=True,
         source="management_portal",
     )
@@ -192,9 +212,8 @@ def update_stock(product_id):
         abort(404)
 
     try:
-        product.stock_quantity = _parse_decimal(
-            request.form.get("stock_quantity"),
-            "Stock",
+        product.stock_quantity = _parse_stock_quantity(
+            request.form.get("stock_quantity")
         )
         db.session.commit()
     except ValueError as exc:

@@ -123,7 +123,7 @@
                     <form class="stock-form" method="post" action="{{ url_for('management_inventory.update_stock', product_id=product.id) }}">
                         <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
                         <input type="hidden" name="active_filter" value="{{ active }}">
-                        <input type="number" step="0.01" min="0" name="stock_quantity" value="{{ product.stock_quantity or 0 }}" aria-label="Stock for {{ product.name }}">
+                        <input type="number" step="1" min="0" name="stock_quantity" value="{{ (product.stock_quantity or 0)|int }}" aria-label="Stock for {{ product.name }}">
                         <button class="btn btn-secondary" type="submit">Save</button>
                     </form>
                 </td>
