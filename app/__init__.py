@@ -2,11 +2,12 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 
+
 db = SQLAlchemy()
 migrate = Migrate()
 
-def create_app():
 
+def create_app():
     app = Flask(__name__)
     app.config.from_object("app.config.Config")
 
@@ -22,7 +23,7 @@ def create_app():
         OrderItem,
         Reservation,
         Payment,
-        BarLocation
+        BarLocation,
     )
 
     from app.routes.webhook import webhook_bp
@@ -30,5 +31,8 @@ def create_app():
 
     from app.routes.products_api import products_api_bp
     app.register_blueprint(products_api_bp)
+
+    from app.routes.management import management_bp
+    app.register_blueprint(management_bp)
 
     return app
