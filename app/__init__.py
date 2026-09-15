@@ -32,8 +32,15 @@ def create_app():
     from app.routes.products_api import products_api_bp
     app.register_blueprint(products_api_bp)
 
-    from app.routes.management import management_bp
+    from app.routes.management import management_bp, _csrf_token
     app.register_blueprint(management_bp)
+
+    # The inventory module is a separate blueprint but extends
+    # management/base.html. A blueprint context processor registered only on
+    # management_bp is not available while rendering templates from another
+    # blueprint, so expose the CSRF helper as a Jinja global for every
+    # management template.
+    app.jinja_env.globals["management_csrf_token"] = _csrf_token
 
     from app.routes.management_inventory import management_inventory_bp
     app.register_blueprint(management_inventory_bp)
