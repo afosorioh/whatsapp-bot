@@ -66,6 +66,52 @@ def _normalize_customer_phone(value):
     return None
 
 
+MEDIA_MESSAGE_TYPES = {"image", "document", "audio", "video", "sticker"}
+
+
+def _extract_incoming_content(msg):
+    """
+    Return a readable text representation while preserving the original
+    WhatsApp media payload in raw_payload.
+    """
+    msg_type = msg.get("type")
+
+    if msg_type == "text":
+        return msg.get("text", {}).get("body")
+
+    if msg_type == "interactive":
+        interactive = msg.get("interactive", {})
+
+        if interactive.get("type") == "list_reply":
+            return interactive.get("list_reply", {}).get("id")
+
+        if interactive.get("type") == "button_reply":
+            return interactive.get("button_reply", {}).get("id")
+
+        return None
+
+    if msg_type in MEDIA_MESSAGE_TYPES:
+        media = msg.get(msg_type, {}) or {}
+        caption = (media.get("caption") or "").strip()
+
+        if caption:
+            return caption
+
+        if msg_type == "document":
+            filename = (media.get("filename") or "").strip()
+            return f"[Document: {filename}]" if filename else "[Document]"
+
+        labels = {
+            "image": "[Image]",
+            "audio": "[Audio]",
+            "video": "[Video]",
+            "sticker": "[Sticker]",
+        }
+        return labels.get(msg_type, "[Media]")
+
+    return None
+
+
 def _find_active_handoff_conversation(
     recipient,
     customer_phone=None,
@@ -209,29 +255,14 @@ def receive_webhook():
                     print("PROFILE NAME:", profile_name, flush=True)
 
                     msg_type = msg.get("type")
-                    incoming_text = None
-
-                    if msg_type == "text":
-                        incoming_text = msg.get("text", {}).get("body")
-
-                    elif msg_type == "interactive":
-                        interactive = msg.get("interactive", {})
-
-                        if interactive.get("type") == "list_reply":
-                            incoming_text = (
-                                interactive
-                                .get("list_reply", {})
-                                .get("id")
-                            )
-
-                        elif interactive.get("type") == "button_reply":
-                            incoming_text = (
-                                interactive
-                                .get("button_reply", {})
-                                .get("id")
-                            )
+                    incoming_text = _extract_incoming_content(msg)
 
                     if not incoming_text:
+                        print(
+                            "Webhook message ignored: unsupported message type",
+                            msg_type,
+                            flush=True,
+                        )
                         continue
 
                     handoff_conversation = _find_active_handoff_conversation(
