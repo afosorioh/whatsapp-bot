@@ -14,12 +14,16 @@ from flask import (
     request,
     session,
     url_for,
+    Response,
 )
 from sqlalchemy import or_
 
 from app import db
 from app.models import Conversation, Customer, Message
-from app.services.whatsapp_service import send_whatsapp_message
+from app.services.whatsapp_service import (
+    download_whatsapp_media,
+    send_whatsapp_message,
+)
 
 
 management_bp = Blueprint(
@@ -106,12 +110,52 @@ def _display_contact(conversation):
     return conversation.whatsapp_number
 
 
+MEDIA_MESSAGE_TYPES = {"image", "document", "audio", "video", "sticker"}
+
+
+def _message_media_metadata(message):
+    message_type = message.message_type or "text"
+
+    if message_type not in MEDIA_MESSAGE_TYPES:
+        return None
+
+    payload = message.raw_payload or {}
+    media = payload.get(message_type, {}) or {}
+    media_id = media.get("id")
+
+    if not media_id:
+        return None
+
+    filename = media.get("filename")
+
+    if not filename:
+        filename = {
+            "image": f"image-{message.id}",
+            "document": f"document-{message.id}",
+            "audio": f"audio-{message.id}",
+            "video": f"video-{message.id}",
+            "sticker": f"sticker-{message.id}",
+        }.get(message_type, f"media-{message.id}")
+
+    return {
+        "id": str(media_id),
+        "mime_type": media.get("mime_type"),
+        "filename": filename,
+        "caption": media.get("caption"),
+        "url": url_for(
+            "management.message_media",
+            message_id=message.id,
+        ),
+    }
+
+
 def _serialize_message(message):
     return {
         "id": message.id,
         "direction": message.direction,
         "content": message.content or "",
         "message_type": message.message_type or "text",
+        "media": _message_media_metadata(message),
         "created_at": (
             message.created_at.isoformat()
             if message.created_at
@@ -399,6 +443,44 @@ def conversation_messages(conversation_id):
         ),
         "messages": [_serialize_message(message) for message in messages],
     })
+
+
+@management_bp.route("/message/<int:message_id>/media")
+@management_required
+def message_media(message_id):
+    message = db.session.get(Message, message_id)
+
+    if not message:
+        abort(404)
+
+    metadata = _message_media_metadata(message)
+
+    if not metadata:
+        abort(404)
+
+    try:
+        media = download_whatsapp_media(metadata["id"])
+    except Exception:
+        current_app.logger.exception(
+            "Unable to download WhatsApp media message %s",
+            message.id,
+        )
+        abort(502, description="Unable to retrieve WhatsApp media")
+
+    filename = str(metadata.get("filename") or f"media-{message.id}")
+    filename = filename.replace('"', "").replace("\\", "_").replace("/", "_")
+
+    response = Response(
+        media["content"],
+        mimetype=media.get("mime_type") or metadata.get("mime_type")
+        or "application/octet-stream",
+    )
+    response.headers["Content-Disposition"] = (
+        f'inline; filename="{filename}"'
+    )
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @management_bp.route(
