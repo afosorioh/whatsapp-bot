@@ -269,7 +269,7 @@
             <div class="media-caption">{{ message.content }}</div>
         {% endif %}
         <div class="message-time">
-            {% if message.created_at %}{{ message.created_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}
+            {% if message.created_at %}{{ management_local_datetime(message.created_at) }}{% endif %}
         </div>
     </div>
 </div>
@@ -342,7 +342,7 @@
                 >
                     <div class="history-date">
                         {% if item.conversation.updated_at %}
-                            {{ item.conversation.updated_at.strftime('%Y-%m-%d %H:%M') }}
+                            {{ management_local_datetime(item.conversation.updated_at, '%Y-%m-%d %H:%M') }}
                         {% else %}
                             Conversation #{{ item.conversation.id }}
                         {% endif %}

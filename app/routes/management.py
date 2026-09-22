@@ -1,7 +1,8 @@
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (
     Blueprint,
@@ -32,6 +33,43 @@ management_bp = Blueprint(
     url_prefix="/chatbot/gestion",
     template_folder="../templates",
 )
+
+
+def _management_timezone():
+    timezone_name = current_app.config.get("TIMEZONE", "America/Bogota")
+
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        current_app.logger.warning(
+            "Invalid TIMEZONE %s; falling back to America/Bogota",
+            timezone_name,
+        )
+        return ZoneInfo("America/Bogota")
+
+
+def _local_datetime(value):
+    """
+    Datetimes in the current schema are stored as naive UTC values.
+    Attach UTC explicitly and convert only when presenting them.
+    """
+    if not value:
+        return None
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(_management_timezone())
+
+
+def _local_isoformat(value):
+    local_value = _local_datetime(value)
+    return local_value.isoformat() if local_value else None
+
+
+def _format_local_datetime(value, fmt="%Y-%m-%d %H:%M:%S"):
+    local_value = _local_datetime(value)
+    return local_value.strftime(fmt) if local_value else ""
 
 
 def _admin_token_is_configured():
@@ -156,11 +194,7 @@ def _serialize_message(message):
         "content": message.content or "",
         "message_type": message.message_type or "text",
         "media": _message_media_metadata(message),
-        "created_at": (
-            message.created_at.isoformat()
-            if message.created_at
-            else None
-        ),
+        "created_at": _local_isoformat(message.created_at),
     }
 
 
@@ -257,6 +291,7 @@ def _history_item(conversation):
 def inject_management_context():
     return {
         "management_csrf_token": _csrf_token,
+        "management_local_datetime": _format_local_datetime,
     }
 
 
@@ -399,16 +434,8 @@ def conversation_history(conversation_id, history_id):
         "conversation_id": history.id,
         "name": _display_name(history),
         "contact": _display_contact(history),
-        "created_at": (
-            history.created_at.isoformat()
-            if history.created_at
-            else None
-        ),
-        "updated_at": (
-            history.updated_at.isoformat()
-            if history.updated_at
-            else None
-        ),
+        "created_at": _local_isoformat(history.created_at),
+        "updated_at": _local_isoformat(history.updated_at),
         "messages": [_serialize_message(message) for message in messages],
     })
 
