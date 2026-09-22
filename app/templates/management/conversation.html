@@ -47,6 +47,44 @@
     .inbound .bubble { background: var(--incoming); }
     .outbound .bubble { background: var(--outgoing); }
 
+    .message-media {
+        display: block;
+        margin-bottom: 7px;
+    }
+
+    .message-media img,
+    .message-media video {
+        display: block;
+        max-width: min(420px, 100%);
+        max-height: 420px;
+        border-radius: 8px;
+        object-fit: contain;
+        background: #111827;
+    }
+
+    .message-media audio {
+        display: block;
+        width: min(340px, 100%);
+    }
+
+    .message-document {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 11px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, .68);
+        color: #0f5132;
+        font-weight: 700;
+        text-decoration: none;
+    }
+
+    .message-document:hover { text-decoration: underline; }
+
+    .media-caption {
+        margin-top: 6px;
+    }
+
     .message-time {
         margin-top: 5px;
         font-size: 11px;
@@ -206,7 +244,30 @@
 {% macro render_message(message) %}
 <div class="message-row {{ message.direction }}" data-message-id="{{ message.id }}">
     <div class="bubble">
-        <div>{{ message.content }}</div>
+        {% if message.message_type in ['image', 'document', 'audio', 'video', 'sticker'] %}
+            {% set media_url = url_for('management.message_media', message_id=message.id) %}
+            <div class="message-media">
+                {% if message.message_type in ['image', 'sticker'] %}
+                    <a href="{{ media_url }}" target="_blank" rel="noopener">
+                        <img src="{{ media_url }}" alt="{{ message.message_type|capitalize }}">
+                    </a>
+                {% elif message.message_type == 'video' %}
+                    <video controls preload="metadata">
+                        <source src="{{ media_url }}">
+                        Your browser cannot play this video.
+                    </video>
+                {% elif message.message_type == 'audio' %}
+                    <audio controls preload="metadata" src="{{ media_url }}"></audio>
+                {% elif message.message_type == 'document' %}
+                    <a class="message-document" href="{{ media_url }}" target="_blank" rel="noopener">
+                        📎 Open document
+                    </a>
+                {% endif %}
+            </div>
+        {% endif %}
+        {% if message.content and message.content not in ['[Image]', '[Audio]', '[Video]', '[Sticker]', '[Document]'] %}
+            <div class="media-caption">{{ message.content }}</div>
+        {% endif %}
         <div class="message-time">
             {% if message.created_at %}{{ message.created_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}
         </div>
@@ -342,6 +403,66 @@
         return d.toLocaleString();
     }
 
+    function isMediaPlaceholder(value) {
+        return /^\[(Image|Audio|Video|Sticker|Document(?::.*)?)\]$/.test(
+            (value || '').trim()
+        );
+    }
+
+    function buildMessageBody(message) {
+        const fragment = document.createDocumentFragment();
+
+        if (message.media && message.media.url) {
+            const mediaBox = document.createElement('div');
+            mediaBox.className = 'message-media';
+
+            if (message.message_type === 'image' || message.message_type === 'sticker') {
+                const link = document.createElement('a');
+                link.href = message.media.url;
+                link.target = '_blank';
+                link.rel = 'noopener';
+
+                const image = document.createElement('img');
+                image.src = message.media.url;
+                image.alt = message.message_type === 'sticker' ? 'Sticker' : 'Image';
+
+                link.appendChild(image);
+                mediaBox.appendChild(link);
+            } else if (message.message_type === 'video') {
+                const video = document.createElement('video');
+                video.controls = true;
+                video.preload = 'metadata';
+                video.src = message.media.url;
+                mediaBox.appendChild(video);
+            } else if (message.message_type === 'audio') {
+                const audio = document.createElement('audio');
+                audio.controls = true;
+                audio.preload = 'metadata';
+                audio.src = message.media.url;
+                mediaBox.appendChild(audio);
+            } else if (message.message_type === 'document') {
+                const link = document.createElement('a');
+                link.className = 'message-document';
+                link.href = message.media.url;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = '📎 ' + (message.media.filename || 'Open document');
+                mediaBox.appendChild(link);
+            }
+
+            fragment.appendChild(mediaBox);
+        }
+
+        if (message.content && !isMediaPlaceholder(message.content)) {
+            const body = document.createElement('div');
+            body.className = message.media ? 'media-caption' : '';
+            body.innerHTML = escapeHtml(message.content).replace(/\n/g, '<br>');
+            fragment.appendChild(body);
+        }
+
+        return fragment;
+    }
+
     function appendMessage(message) {
         if (!container) return;
         if (document.querySelector('[data-message-id="' + message.id + '"]')) return;
@@ -353,14 +474,11 @@
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
 
-        const body = document.createElement('div');
-        body.innerHTML = escapeHtml(message.content).replace(/\n/g, '<br>');
-
         const time = document.createElement('div');
         time.className = 'message-time';
         time.textContent = formatDate(message.created_at);
 
-        bubble.appendChild(body);
+        bubble.appendChild(buildMessageBody(message));
         bubble.appendChild(time);
         row.appendChild(bubble);
         container.appendChild(row);
@@ -430,14 +548,11 @@
             const bubble = document.createElement('div');
             bubble.className = 'bubble';
 
-            const body = document.createElement('div');
-            body.innerHTML = escapeHtml(message.content).replace(/\n/g, '<br>');
-
             const time = document.createElement('div');
             time.className = 'message-time';
             time.textContent = formatDate(message.created_at);
 
-            bubble.appendChild(body);
+            bubble.appendChild(buildMessageBody(message));
             bubble.appendChild(time);
             row.appendChild(bubble);
             historyMessages.appendChild(row);
