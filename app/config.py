@@ -45,6 +45,7 @@ class Config:
 
     PORTFOLIO_PDF_URL = os.getenv("PORTFOLIO_PDF_URL")
     CHATBOT_API_KEY = os.getenv("CHATBOT_API_KEY")
+    TIMEZONE = os.getenv("TIMEZONE", "America/Bogota")
 
     # Lightweight internal management inbox authentication.
     # The token is submitted once on the login page and then kept in the
