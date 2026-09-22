@@ -1,6 +1,59 @@
 import requests
 from flask import current_app
 
+
+def download_whatsapp_media(media_id):
+    """
+    Download inbound WhatsApp media through the Graph API.
+
+    Meta first returns a short-lived download URL for the media ID. The
+    binary request must also be authenticated with the WhatsApp access token.
+    Files are not made public or persisted by this helper.
+    """
+    access_token = current_app.config.get("WHATSAPP_ACCESS_TOKEN")
+    graph_version = current_app.config.get("WHATSAPP_GRAPH_VERSION", "v23.0")
+
+    if not access_token:
+        raise RuntimeError("WHATSAPP_ACCESS_TOKEN is not configured")
+
+    media_id = str(media_id).strip()
+    metadata_url = (
+        f"https://graph.facebook.com/{graph_version}/{media_id}"
+    )
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    metadata_response = requests.get(
+        metadata_url,
+        headers=headers,
+        timeout=20
+    )
+    metadata_response.raise_for_status()
+    metadata = metadata_response.json()
+
+    download_url = metadata.get("url")
+    if not download_url:
+        raise RuntimeError("WhatsApp media URL was not returned by Meta")
+
+    media_response = requests.get(
+        download_url,
+        headers=headers,
+        timeout=30
+    )
+    media_response.raise_for_status()
+
+    return {
+        "content": media_response.content,
+        "mime_type": (
+            metadata.get("mime_type")
+            or media_response.headers.get("Content-Type")
+            or "application/octet-stream"
+        ),
+        "file_size": metadata.get("file_size"),
+        "sha256": metadata.get("sha256"),
+    }
+
 def build_recipient_fields(recipient):
     recipient = str(recipient).strip()
 
