@@ -23,6 +23,8 @@ from app import db
 from app.models import Conversation, Customer, Message
 from app.services.whatsapp_service import (
     download_whatsapp_media,
+    send_whatsapp_contact,
+    send_whatsapp_media_file,
     send_whatsapp_message,
 )
 
@@ -106,6 +108,49 @@ def management_required(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+MOBILE_USER_AGENT_MARKERS = (
+    "android",
+    "iphone",
+    "ipad",
+    "ipod",
+    "mobile",
+    "windows phone",
+)
+
+ALLOWED_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+}
+
+ALLOWED_DOCUMENT_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+    "text/csv",
+}
+
+
+def _is_mobile_request():
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    return any(marker in user_agent for marker in MOBILE_USER_AGENT_MARKERS)
+
+
+def _extract_whatsapp_message_id(response):
+    response_messages = (
+        response.get("messages", [])
+        if isinstance(response, dict)
+        else []
+    )
+    if response_messages:
+        return response_messages[0].get("id")
+    return None
 
 
 def _conversation_customer(conversation):
@@ -401,6 +446,7 @@ def conversation_detail(conversation_id):
         customer_contact=_display_contact(conversation),
         messages=messages,
         history_items=history_items,
+        mobile_client=_is_mobile_request(),
     )
 
 
@@ -537,9 +583,11 @@ def send_message(conversation_id):
         )
 
     text = (request.form.get("message") or "").strip()
+    attachment = request.files.get("attachment")
+    has_attachment = bool(attachment and attachment.filename)
 
-    if not text:
-        flash("Write a message before sending.", "warning")
+    if not text and not has_attachment:
+        flash("Write a message or attach a file before sending.", "warning")
         return redirect(
             url_for(
                 "management.conversation_detail",
@@ -548,10 +596,66 @@ def send_message(conversation_id):
         )
 
     try:
-        response = send_whatsapp_message(
-            conversation.whatsapp_number,
-            text,
-        )
+        if has_attachment:
+            mime_type = (attachment.mimetype or "").lower()
+
+            if mime_type in ALLOWED_IMAGE_MIME_TYPES:
+                message_type = "image"
+            elif mime_type in ALLOWED_DOCUMENT_MIME_TYPES:
+                message_type = "document"
+            else:
+                flash(
+                    "Unsupported attachment type. Use JPG/PNG images or "
+                    "PDF, Word, Excel, PowerPoint, TXT or CSV documents.",
+                    "warning",
+                )
+                return redirect(
+                    url_for(
+                        "management.conversation_detail",
+                        conversation_id=conversation.id,
+                    )
+                )
+
+            sent = send_whatsapp_media_file(
+                conversation.whatsapp_number,
+                attachment,
+                message_type,
+                caption=text or None,
+            )
+            response = sent["response"]
+            whatsapp_message_id = _extract_whatsapp_message_id(response)
+
+            media_payload = {
+                "id": sent["media_id"],
+                "mime_type": sent["mime_type"],
+            }
+            if sent.get("filename"):
+                media_payload["filename"] = sent["filename"]
+            if text:
+                media_payload["caption"] = text
+
+            raw_payload = {
+                "source": "management_portal",
+                message_type: media_payload,
+            }
+            content = (
+                text
+                or (
+                    f"[Document: {sent['filename']}]"
+                    if message_type == "document"
+                    else "[Image]"
+                )
+            )
+        else:
+            message_type = "text"
+            response = send_whatsapp_message(
+                conversation.whatsapp_number,
+                text,
+            )
+            whatsapp_message_id = _extract_whatsapp_message_id(response)
+            raw_payload = {"source": "management_portal"}
+            content = text
+
     except Exception as exc:
         current_app.logger.exception(
             "Unable to send advisor WhatsApp message"
@@ -564,22 +668,104 @@ def send_message(conversation_id):
             )
         )
 
-    whatsapp_message_id = None
-    response_messages = (
-        response.get("messages", [])
-        if isinstance(response, dict)
-        else []
+    message = Message(
+        conversation_id=conversation.id,
+        whatsapp_message_id=whatsapp_message_id,
+        direction="outbound",
+        message_type=message_type,
+        content=content,
+        raw_payload=raw_payload,
     )
-    if response_messages:
-        whatsapp_message_id = response_messages[0].get("id")
+
+    conversation.updated_at = datetime.utcnow()
+    db.session.add(message)
+    db.session.commit()
+
+    return redirect(
+        url_for(
+            "management.conversation_detail",
+            conversation_id=conversation.id,
+        )
+    )
+
+
+@management_bp.route(
+    "/conversation/<int:conversation_id>/send-contact",
+    methods=["POST"],
+)
+@management_required
+def send_contact(conversation_id):
+    if not _valid_csrf():
+        abort(400, description="Invalid CSRF token")
+
+    conversation = db.session.get(Conversation, conversation_id)
+
+    if not conversation:
+        abort(404)
+
+    if (
+        not conversation.human_handoff
+        or conversation.current_state == "CLOSED"
+    ):
+        flash("This conversation is no longer assigned to an advisor.", "warning")
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    contact_name = (request.form.get("contact_name") or "").strip()
+    contact_phone = (request.form.get("contact_phone") or "").strip()
+    contact_email = (request.form.get("contact_email") or "").strip()
+
+    if not contact_name or not contact_phone:
+        flash("Contact name and phone are required.", "warning")
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    try:
+        sent = send_whatsapp_contact(
+            conversation.whatsapp_number,
+            contact_name,
+            contact_phone,
+            contact_email or None,
+        )
+    except Exception as exc:
+        current_app.logger.exception(
+            "Unable to send WhatsApp contact from advisor portal"
+        )
+        flash(f"WhatsApp contact delivery failed: {exc}", "danger")
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    whatsapp_message_id = _extract_whatsapp_message_id(sent["response"])
+
+    lines = [
+        f"📇 Contact: {contact_name}",
+        f"Phone: {contact_phone}",
+    ]
+    if contact_email:
+        lines.append(f"Email: {contact_email}")
 
     message = Message(
         conversation_id=conversation.id,
         whatsapp_message_id=whatsapp_message_id,
         direction="outbound",
-        message_type="text",
-        content=text,
-        raw_payload={"source": "management_portal"},
+        message_type="contacts",
+        content="\n".join(lines),
+        raw_payload={
+            "source": "management_portal",
+            "contacts": [sent["contact"]],
+        },
     )
 
     conversation.updated_at = datetime.utcnow()
