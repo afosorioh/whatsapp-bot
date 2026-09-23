@@ -136,6 +136,29 @@ ALLOWED_DOCUMENT_MIME_TYPES = {
     "text/csv",
 }
 
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+ALLOWED_DOCUMENT_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".ppt", ".pptx", ".txt", ".csv",
+}
+
+
+def _attachment_message_type(file_storage):
+    mime_type = (file_storage.mimetype or "").lower()
+    filename = (file_storage.filename or "").lower()
+    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
+
+    if mime_type in ALLOWED_IMAGE_MIME_TYPES or suffix in ALLOWED_IMAGE_EXTENSIONS:
+        return "image"
+
+    if (
+        mime_type in ALLOWED_DOCUMENT_MIME_TYPES
+        or suffix in ALLOWED_DOCUMENT_EXTENSIONS
+    ):
+        return "document"
+
+    return None
+
 
 def _is_mobile_request():
     user_agent = (request.headers.get("User-Agent") or "").lower()
@@ -597,13 +620,9 @@ def send_message(conversation_id):
 
     try:
         if has_attachment:
-            mime_type = (attachment.mimetype or "").lower()
+            message_type = _attachment_message_type(attachment)
 
-            if mime_type in ALLOWED_IMAGE_MIME_TYPES:
-                message_type = "image"
-            elif mime_type in ALLOWED_DOCUMENT_MIME_TYPES:
-                message_type = "document"
-            else:
+            if not message_type:
                 flash(
                     "Unsupported attachment type. Use JPG/PNG images or "
                     "PDF, Word, Excel, PowerPoint, TXT or CSV documents.",
