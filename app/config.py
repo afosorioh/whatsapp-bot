@@ -46,6 +46,8 @@ class Config:
     PORTFOLIO_PDF_URL = os.getenv("PORTFOLIO_PDF_URL")
     CHATBOT_API_KEY = os.getenv("CHATBOT_API_KEY")
     TIMEZONE = os.getenv("TIMEZONE", "America/Bogota")
+    CHATBOT_MAX_UPLOAD_MB = int(os.getenv("CHATBOT_MAX_UPLOAD_MB", "20"))
+    MAX_CONTENT_LENGTH = CHATBOT_MAX_UPLOAD_MB * 1024 * 1024
 
     # Lightweight internal management inbox authentication.
     # The token is submitted once on the login page and then kept in the
