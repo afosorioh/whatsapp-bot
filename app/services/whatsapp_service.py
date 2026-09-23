@@ -456,3 +456,197 @@ def send_whatsapp_document(
 
     response.raise_for_status()
     return response.json()
+
+
+
+def _whatsapp_api_context():
+    access_token = current_app.config.get("WHATSAPP_ACCESS_TOKEN")
+    phone_number_id = current_app.config.get("WHATSAPP_PHONE_NUMBER_ID")
+    graph_version = current_app.config.get("WHATSAPP_GRAPH_VERSION", "v23.0")
+
+    if not access_token:
+        raise RuntimeError("WHATSAPP_ACCESS_TOKEN is not configured")
+
+    if not phone_number_id:
+        raise RuntimeError("WHATSAPP_PHONE_NUMBER_ID is not configured")
+
+    return access_token, phone_number_id, graph_version
+
+
+def send_whatsapp_media_file(to, file_storage, media_type, caption=None):
+    """Upload an image/document to Meta and send it to the recipient."""
+    if media_type not in {"image", "document"}:
+        raise ValueError("Only image and document attachments are supported")
+
+    access_token, phone_number_id, graph_version = _whatsapp_api_context()
+
+    filename = (file_storage.filename or "attachment").strip() or "attachment"
+    mime_type = file_storage.mimetype or "application/octet-stream"
+
+    upload_url = (
+        f"https://graph.facebook.com/"
+        f"{graph_version}/{phone_number_id}/media"
+    )
+
+    file_storage.stream.seek(0)
+
+    upload_response = requests.post(
+        upload_url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        data={
+            "messaging_product": "whatsapp",
+            "type": mime_type,
+        },
+        files={
+            "file": (
+                filename,
+                file_storage.stream,
+                mime_type,
+            )
+        },
+        timeout=60,
+    )
+
+    if upload_response.status_code >= 400:
+        print(
+            "WhatsApp API media upload error:",
+            upload_response.status_code,
+            upload_response.text,
+            flush=True,
+        )
+
+    upload_response.raise_for_status()
+    upload_data = upload_response.json()
+    media_id = upload_data.get("id")
+
+    if not media_id:
+        raise RuntimeError("Meta did not return a media ID after upload")
+
+    recipient_fields = build_recipient_fields(to)
+    media_payload = {"id": media_id}
+
+    if caption:
+        media_payload["caption"] = str(caption).strip()
+
+    if media_type == "document":
+        media_payload["filename"] = filename
+
+    message_url = (
+        f"https://graph.facebook.com/"
+        f"{graph_version}/{phone_number_id}/messages"
+    )
+    payload = {
+        "messaging_product": "whatsapp",
+        **recipient_fields,
+        "type": media_type,
+        media_type: media_payload,
+    }
+
+    response = requests.post(
+        message_url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+
+    if response.status_code >= 400:
+        print(
+            "WhatsApp API media message error:",
+            response.status_code,
+            response.text,
+            flush=True,
+        )
+
+    response.raise_for_status()
+
+    return {
+        "response": response.json(),
+        "media_id": media_id,
+        "message_type": media_type,
+        "filename": filename,
+        "mime_type": mime_type,
+        "caption": str(caption or "").strip(),
+    }
+
+
+def send_whatsapp_contact(to, name, phone, email=None):
+    """Send a WhatsApp contact card to the recipient."""
+    access_token, phone_number_id, graph_version = _whatsapp_api_context()
+
+    name = str(name or "").strip()
+    phone = str(phone or "").strip()
+    email = str(email or "").strip()
+
+    if not name:
+        raise ValueError("Contact name is required")
+
+    if not phone:
+        raise ValueError("Contact phone is required")
+
+    clean_phone = (
+        phone.replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
+
+    contact = {
+        "name": {
+            "formatted_name": name,
+        },
+        "phones": [
+            {
+                "phone": clean_phone,
+                "type": "CELL",
+            }
+        ],
+    }
+
+    if email:
+        contact["emails"] = [
+            {
+                "email": email,
+                "type": "WORK",
+            }
+        ]
+
+    recipient_fields = build_recipient_fields(to)
+    payload = {
+        "messaging_product": "whatsapp",
+        **recipient_fields,
+        "type": "contacts",
+        "contacts": [contact],
+    }
+
+    url = (
+        f"https://graph.facebook.com/"
+        f"{graph_version}/{phone_number_id}/messages"
+    )
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+
+    if response.status_code >= 400:
+        print(
+            "WhatsApp API contact error:",
+            response.status_code,
+            response.text,
+            flush=True,
+        )
+
+    response.raise_for_status()
+
+    return {
+        "response": response.json(),
+        "contact": contact,
+    }
