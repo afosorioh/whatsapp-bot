@@ -100,8 +100,13 @@
         background: white;
     }
 
+    .composer {
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
     .composer textarea {
-        flex: 1;
+        flex: 1 1 320px;
         min-height: 52px;
         max-height: 150px;
         resize: vertical;
@@ -109,6 +114,80 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         font: inherit;
+    }
+
+    .composer-tool {
+        border: 1px solid var(--border);
+        background: #fff;
+        border-radius: 8px;
+        min-width: 42px;
+        height: 42px;
+        padding: 0 11px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+    }
+
+    .composer-tool:hover { background: #f8fafc; }
+
+    .attachment-preview {
+        flex-basis: 100%;
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        background: #f8fafc;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 13px;
+    }
+
+    .attachment-preview.visible { display: flex; }
+
+    .attachment-preview-name {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    .attachment-remove {
+        margin-left: auto;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        font-size: 18px;
+    }
+
+    .contact-modal-body {
+        padding: 16px;
+    }
+
+    .contact-field {
+        margin-bottom: 12px;
+    }
+
+    .contact-field label {
+        display: block;
+        font-weight: 700;
+        font-size: 13px;
+        margin-bottom: 5px;
+    }
+
+    .contact-field input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font: inherit;
+    }
+
+    .contact-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 0 16px 16px;
     }
 
     .sidebar-card { padding: 16px; }
@@ -301,10 +380,32 @@
         </div>
 
         {% if conversation.human_handoff and conversation.current_state != 'CLOSED' %}
-        <form class="composer" method="post" action="{{ url_for('management.send_message', conversation_id=conversation.id) }}">
+        <form
+            id="message-composer"
+            class="composer"
+            method="post"
+            enctype="multipart/form-data"
+            action="{{ url_for('management.send_message', conversation_id=conversation.id) }}"
+        >
             <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
-            <textarea name="message" placeholder="Write a WhatsApp message..." required autofocus></textarea>
+            <input
+                id="attachment-input"
+                type="file"
+                name="attachment"
+                hidden
+                accept="image/jpeg,image/png,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv"
+            >
+            <button id="attachment-button" class="composer-tool" type="button" title="Attach image or document" aria-label="Attach image or document">📎</button>
+            {% if mobile_client %}
+            <button id="contact-button" class="composer-tool" type="button" title="Send contact" aria-label="Send contact">📇</button>
+            {% endif %}
+            <textarea name="message" placeholder="Write a WhatsApp message..." autofocus></textarea>
             <button class="btn btn-primary" type="submit">Send</button>
+            <div id="attachment-preview" class="attachment-preview">
+                <span>📎</span>
+                <span id="attachment-preview-name" class="attachment-preview-name"></span>
+                <button id="attachment-remove" class="attachment-remove" type="button" aria-label="Remove attachment">×</button>
+            </div>
         </form>
         {% endif %}
     </section>
@@ -366,6 +467,42 @@
     </aside>
 </div>
 
+{% if mobile_client %}
+<div id="contact-modal-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div class="history-modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title" style="width:min(520px,96vw);">
+        <div class="history-modal-header">
+            <div>
+                <div id="contact-modal-title" class="history-modal-title">Send contact</div>
+                <div class="muted" style="font-size:13px;">Select a phone contact when supported, or enter it manually.</div>
+            </div>
+            <button id="contact-modal-close" type="button" class="modal-close" aria-label="Close">×</button>
+        </div>
+
+        <form method="post" action="{{ url_for('management.send_contact', conversation_id=conversation.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
+            <div class="contact-modal-body">
+                <div class="contact-field">
+                    <label for="contact-name">Name</label>
+                    <input id="contact-name" type="text" name="contact_name" required>
+                </div>
+                <div class="contact-field">
+                    <label for="contact-phone">Phone</label>
+                    <input id="contact-phone" type="tel" name="contact_phone" required>
+                </div>
+                <div class="contact-field">
+                    <label for="contact-email">Email (optional)</label>
+                    <input id="contact-email" type="email" name="contact_email">
+                </div>
+            </div>
+            <div class="contact-modal-actions">
+                <button id="contact-modal-cancel" class="btn btn-secondary" type="button">Cancel</button>
+                <button class="btn btn-primary" type="submit">Send contact</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+
 <div id="history-modal-backdrop" class="modal-backdrop" aria-hidden="true">
     <div class="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
         <div class="history-modal-header">
@@ -385,6 +522,50 @@
 <script>
 (function () {
     const container = document.getElementById('messages');
+    const composer = document.getElementById('message-composer');
+    const attachmentInput = document.getElementById('attachment-input');
+    const attachmentButton = document.getElementById('attachment-button');
+    const attachmentPreview = document.getElementById('attachment-preview');
+    const attachmentPreviewName = document.getElementById('attachment-preview-name');
+    const attachmentRemove = document.getElementById('attachment-remove');
+
+    if (attachmentButton && attachmentInput) {
+        attachmentButton.addEventListener('click', function () {
+            attachmentInput.click();
+        });
+
+        attachmentInput.addEventListener('change', function () {
+            const file = attachmentInput.files && attachmentInput.files[0];
+
+            if (!file) {
+                attachmentPreview.classList.remove('visible');
+                attachmentPreviewName.textContent = '';
+                return;
+            }
+
+            attachmentPreviewName.textContent = file.name;
+            attachmentPreview.classList.add('visible');
+        });
+
+        attachmentRemove.addEventListener('click', function () {
+            attachmentInput.value = '';
+            attachmentPreview.classList.remove('visible');
+            attachmentPreviewName.textContent = '';
+        });
+    }
+
+    if (composer) {
+        composer.addEventListener('submit', function (event) {
+            const text = (composer.querySelector('textarea[name="message"]').value || '').trim();
+            const hasFile = attachmentInput && attachmentInput.files && attachmentInput.files.length > 0;
+
+            if (!text && !hasFile) {
+                event.preventDefault();
+                alert('Write a message or attach an image/document before sending.');
+            }
+        });
+    }
+
 
     function scrollToBottom() {
         if (container) container.scrollTop = container.scrollHeight;
@@ -516,6 +697,82 @@
         setInterval(poll, 3000);
     }
 
+    const contactButton = document.getElementById('contact-button');
+    const contactBackdrop = document.getElementById('contact-modal-backdrop');
+    const contactClose = document.getElementById('contact-modal-close');
+    const contactCancel = document.getElementById('contact-modal-cancel');
+    const contactName = document.getElementById('contact-name');
+    const contactPhone = document.getElementById('contact-phone');
+    const contactEmail = document.getElementById('contact-email');
+
+    function openContactModal() {
+        if (!contactBackdrop) return;
+        contactBackdrop.classList.add('open');
+        contactBackdrop.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeContactModal() {
+        if (!contactBackdrop) return;
+        contactBackdrop.classList.remove('open');
+        contactBackdrop.setAttribute('aria-hidden', 'true');
+    }
+
+    async function chooseContact() {
+        if (
+            navigator.contacts &&
+            typeof navigator.contacts.select === 'function'
+        ) {
+            try {
+                const contacts = await navigator.contacts.select(
+                    ['name', 'tel', 'email'],
+                    {multiple: false}
+                );
+
+                if (contacts && contacts.length) {
+                    const selected = contacts[0];
+                    if (contactName) {
+                        contactName.value = (
+                            Array.isArray(selected.name)
+                                ? selected.name[0]
+                                : selected.name
+                        ) || '';
+                    }
+                    if (contactPhone) {
+                        contactPhone.value = (
+                            Array.isArray(selected.tel)
+                                ? selected.tel[0]
+                                : selected.tel
+                        ) || '';
+                    }
+                    if (contactEmail) {
+                        contactEmail.value = (
+                            Array.isArray(selected.email)
+                                ? selected.email[0]
+                                : selected.email
+                        ) || '';
+                    }
+                }
+            } catch (error) {
+                if (error && error.name !== 'AbortError') {
+                    console.debug('Contact picker failed', error);
+                }
+            }
+        }
+
+        openContactModal();
+    }
+
+    if (contactButton) {
+        contactButton.addEventListener('click', chooseContact);
+    }
+    if (contactClose) contactClose.addEventListener('click', closeContactModal);
+    if (contactCancel) contactCancel.addEventListener('click', closeContactModal);
+    if (contactBackdrop) {
+        contactBackdrop.addEventListener('click', function (event) {
+            if (event.target === contactBackdrop) closeContactModal();
+        });
+    }
+
     const backdrop = document.getElementById('history-modal-backdrop');
     const closeButton = document.getElementById('history-modal-close');
     const title = document.getElementById('history-modal-title');
@@ -597,8 +854,14 @@
     });
 
     document.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape' && backdrop.classList.contains('open')) {
+        if (event.key !== 'Escape') return;
+
+        if (backdrop && backdrop.classList.contains('open')) {
             closeHistoryModal();
+        }
+
+        if (contactBackdrop && contactBackdrop.classList.contains('open')) {
+            closeContactModal();
         }
     });
 })();
