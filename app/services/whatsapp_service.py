@@ -593,6 +593,9 @@ def send_whatsapp_contact(to, name, phone, email=None):
         .replace(")", "")
     )
 
+    # Meta's outbound contact schema accepts HOME or WORK for phone type.
+    # "CELL" can be present in received contact payloads, but is rejected by
+    # the send-message endpoint with HTTP 400.
     contact = {
         "name": {
             "formatted_name": name,
@@ -600,7 +603,7 @@ def send_whatsapp_contact(to, name, phone, email=None):
         "phones": [
             {
                 "phone": clean_phone,
-                "type": "CELL",
+                "type": "WORK",
             }
         ],
     }
@@ -644,7 +647,19 @@ def send_whatsapp_contact(to, name, phone, email=None):
             flush=True,
         )
 
-    response.raise_for_status()
+        try:
+            error_data = response.json()
+            error_message = (
+                error_data.get("error", {}).get("message")
+                or response.text
+            )
+        except ValueError:
+            error_message = response.text
+
+        raise RuntimeError(
+            f"WhatsApp contact API error {response.status_code}: "
+            f"{error_message}"
+        )
 
     return {
         "response": response.json(),
