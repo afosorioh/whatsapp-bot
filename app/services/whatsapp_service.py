@@ -593,13 +593,24 @@ def send_whatsapp_contact(to, name, phone, email=None):
         .replace(")", "")
     )
 
-    # Meta's outbound contact schema accepts HOME or WORK for phone type.
-    # "CELL" can be present in received contact payloads, but is rejected by
-    # the send-message endpoint with HTTP 400.
+    # Meta requires formatted_name plus at least one additional name field
+    # (for example first_name or last_name) in outbound contact messages.
+    # Split the entered/displayed name conservatively: the first token becomes
+    # first_name and the remaining tokens become last_name.
+    name_parts = name.split()
+    first_name = name_parts[0]
+    last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else None
+
+    contact_name = {
+        "formatted_name": name,
+        "first_name": first_name,
+    }
+
+    if last_name:
+        contact_name["last_name"] = last_name
+
     contact = {
-        "name": {
-            "formatted_name": name,
-        },
+        "name": contact_name,
         "phones": [
             {
                 "phone": clean_phone,
