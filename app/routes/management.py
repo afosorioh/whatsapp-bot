@@ -291,6 +291,47 @@ def _conversation_identifiers(conversation):
     return identifiers, phone_identifiers
 
 
+def _conversation_payments(conversation_id):
+    payments = (
+        Payment.query
+        .filter_by(provider="wompi")
+        .order_by(Payment.created_at.desc(), Payment.id.desc())
+        .limit(200)
+        .all()
+    )
+
+    return [
+        payment
+        for payment in payments
+        if str((payment.raw_payload or {}).get("conversation_id"))
+        == str(conversation_id)
+    ]
+
+
+def _serialize_payment(payment):
+    raw_payload = dict(payment.raw_payload or {})
+    transaction = raw_payload.get("transaction") or {}
+
+    return {
+        "id": payment.id,
+        "reference": payment.reference,
+        "amount": int(payment.amount or 0),
+        "currency": payment.currency or "COP",
+        "status": payment.status or "PENDING",
+        "payment_url": payment.payment_url,
+        "payment_link_id": (
+            raw_payload.get("wompi_payment_link_id")
+            or (
+                (raw_payload.get("response") or {}).get("data") or {}
+            ).get("id")
+        ),
+        "transaction_id": transaction.get("id"),
+        "payment_method_type": transaction.get("payment_method_type"),
+        "created_at": _local_isoformat(payment.created_at),
+        "updated_at": _local_isoformat(payment.updated_at),
+    }
+
+
 def _previous_advisor_conversations(conversation):
     identifiers, phone_identifiers = _conversation_identifiers(conversation)
 
@@ -470,8 +511,28 @@ def conversation_detail(conversation_id):
         customer_contact=_display_contact(conversation),
         messages=messages,
         history_items=history_items,
+        payments=_conversation_payments(conversation.id),
         mobile_client=_is_mobile_request(),
     )
+
+
+@management_bp.route(
+    "/conversation/<int:conversation_id>/payments"
+)
+@management_required
+def conversation_payments(conversation_id):
+    conversation = db.session.get(Conversation, conversation_id)
+
+    if not conversation:
+        abort(404)
+
+    return jsonify({
+        "conversation_id": conversation.id,
+        "payments": [
+            _serialize_payment(payment)
+            for payment in _conversation_payments(conversation.id)
+        ],
+    })
 
 
 @management_bp.route(
