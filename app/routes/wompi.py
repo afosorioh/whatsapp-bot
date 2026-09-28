@@ -92,6 +92,7 @@ def update_payment_from_transaction(payment, transaction_result):
     raw_payload["transaction"] = transaction
     raw_payload["transaction_lookup_response"] = transaction_result.get("response")
     raw_payload["transaction_environment"] = transaction_result.get("environment")
+    raw_payload["captured_transaction_id"] = str(transaction_id)
 
     payment.provider_transaction_id = str(transaction_id)
     payment.status = str(transaction.get("status") or "PENDING").upper()
@@ -130,12 +131,6 @@ def payment_result(token):
     error = None
 
     if transaction_id:
-        raw_payload = dict(payment.raw_payload or {})
-        raw_payload["captured_transaction_id"] = transaction_id
-        payment.raw_payload = raw_payload
-        payment.provider_transaction_id = transaction_id
-        db.session.commit()
-
         try:
             result = get_transaction(transaction_id)
             update_payment_from_transaction(payment, result)
