@@ -110,8 +110,12 @@ def refresh_payment_transaction(payment):
     # link ID. Only query /transactions after a real transaction ID has been
     # captured and persisted in raw_payload.
     captured_id = raw_payload.get("captured_transaction_id")
+    candidate_id = raw_payload.get("redirect_transaction_candidate")
+
     if captured_id:
         transaction_id = captured_id
+    elif candidate_id:
+        transaction_id = candidate_id
     elif transaction_id and link_id and str(transaction_id) == str(link_id):
         return payment.status
 
@@ -131,6 +135,11 @@ def payment_result(token):
     error = None
 
     if transaction_id:
+        raw_payload = dict(payment.raw_payload or {})
+        raw_payload["redirect_transaction_candidate"] = transaction_id
+        payment.raw_payload = raw_payload
+        db.session.commit()
+
         try:
             result = get_transaction(transaction_id)
             update_payment_from_transaction(payment, result)
