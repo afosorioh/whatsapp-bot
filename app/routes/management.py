@@ -888,7 +888,7 @@ def send_payment_link(conversation_id):
         },
     )
     db.session.add(payment)
-    db.session.flush()
+    db.session.commit()
 
     payment_message = (
         "💳 *Enlace de pago Wompi*\n"
@@ -903,10 +903,15 @@ def send_payment_link(conversation_id):
             payment_message,
         )
     except Exception as exc:
-        db.session.rollback()
         current_app.logger.exception(
             "Wompi link created but WhatsApp delivery failed"
         )
+        payment.status = "CREATED_NOT_SENT"
+        payload = dict(payment.raw_payload or {})
+        payload["whatsapp_delivery_error"] = str(exc)
+        payment.raw_payload = payload
+        db.session.commit()
+
         flash(
             "The Wompi link was created, but WhatsApp delivery failed. "
             f"Link: {wompi_link['url']} — Error: {exc}",
