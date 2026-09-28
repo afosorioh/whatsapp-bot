@@ -49,6 +49,10 @@ class Config:
     CHATBOT_MAX_UPLOAD_MB = int(os.getenv("CHATBOT_MAX_UPLOAD_MB", "20"))
     MAX_CONTENT_LENGTH = CHATBOT_MAX_UPLOAD_MB * 1024 * 1024
 
+    WOMPI_ENV = os.getenv("WOMPI_ENV", "sandbox")
+    WOMPI_PUBLIC_KEY = os.getenv("WOMPI_PUBLIC_KEY")
+    WOMPI_PRIVATE_KEY = os.getenv("WOMPI_PRIVATE_KEY")
+
     # Lightweight internal management inbox authentication.
     # The token is submitted once on the login page and then kept in the
     # signed Flask session cookie. Never expose the token in a URL.
