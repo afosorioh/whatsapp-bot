@@ -511,7 +511,10 @@ def conversation_detail(conversation_id):
         customer_contact=_display_contact(conversation),
         messages=messages,
         history_items=history_items,
-        payments=_conversation_payments(conversation.id),
+        payments=[
+            _serialize_payment(payment)
+            for payment in _conversation_payments(conversation.id)
+        ],
         mobile_client=_is_mobile_request(),
     )
 
