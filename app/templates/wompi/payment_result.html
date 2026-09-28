@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Resultado del pago · Cervecería Libre</title>
+    {% if not is_final and not error %}
+    <meta http-equiv="refresh" content="4">
+    {% endif %}
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f5f7fa;
+            color: #1f2937;
+        }
+        .card {
+            width: min(520px, 100%);
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 12px 36px rgba(15, 23, 42, .12);
+            padding: 28px;
+            box-sizing: border-box;
+        }
+        h1 { margin: 0 0 8px; font-size: 25px; }
+        .amount { font-size: 30px; font-weight: 800; margin: 20px 0 10px; }
+        .badge {
+            display: inline-block;
+            padding: 7px 11px;
+            border-radius: 999px;
+            font-weight: 800;
+            background: #fff3cd;
+            color: #856404;
+        }
+        .badge.APPROVED { background: #dcfae6; color: #067647; }
+        .badge.DECLINED, .badge.ERROR, .badge.VOIDED {
+            background: #fee4e2;
+            color: #b42318;
+        }
+        .muted { color: #667085; line-height: 1.5; }
+        .error {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 8px;
+            background: #fee4e2;
+            color: #b42318;
+            overflow-wrap: anywhere;
+        }
+        .meta {
+            margin-top: 18px;
+            font-size: 13px;
+            color: #667085;
+            overflow-wrap: anywhere;
+        }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <h1>Cervecería Libre</h1>
+        <div class="muted">Resultado del pago con Wompi</div>
+
+        <div class="amount">${{ "{:,.0f}".format(payment.amount or 0) }} COP</div>
+        <div class="badge {{ payment.status or 'PENDING' }}">
+            {{ payment.status or "PENDING" }}
+        </div>
+
+        {% if payment.status == "APPROVED" %}
+        <p class="muted">El pago fue aprobado. Puedes cerrar esta página.</p>
+        {% elif is_final %}
+        <p class="muted">La transacción terminó con el estado mostrado arriba.</p>
+        {% elif not error %}
+        <p class="muted">Estamos verificando el estado final con Wompi. Esta página se actualizará automáticamente.</p>
+        {% endif %}
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <div class="meta">
+            {% if transaction_id %}
+            Transacción: {{ transaction_id }}
+            {% endif %}
+        </div>
+    </main>
+</body>
+</html>
