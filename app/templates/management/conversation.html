@@ -190,6 +190,41 @@
         padding: 0 16px 16px;
     }
 
+    .payment-form label {
+        display: block;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
+
+    .payment-form input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font: inherit;
+        margin-bottom: 10px;
+    }
+
+    .payment-help {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+        margin-bottom: 12px;
+    }
+
+    .payment-environment {
+        display: inline-block;
+        margin-bottom: 10px;
+        padding: 4px 7px;
+        border-radius: 999px;
+        background: #fff3cd;
+        color: #856404;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
     .sidebar-card { padding: 16px; }
     .sidebar-card + .sidebar-card { margin-top: 16px; }
 
@@ -426,6 +461,48 @@
             </form>
             {% endif %}
         </div>
+
+        {% if conversation.human_handoff and conversation.current_state != 'CLOSED' %}
+        <div class="card sidebar-card">
+            <h3 style="margin-top:0;margin-bottom:4px;">Payment link</h3>
+            <div class="muted" style="font-size:13px;margin-bottom:12px;">
+                Generate a fixed-value Wompi link and send it to this customer.
+            </div>
+
+            {% if config.WOMPI_ENV == 'sandbox' %}
+            <div class="payment-environment">WOMPI SANDBOX</div>
+            {% endif %}
+
+            <form
+                class="payment-form"
+                method="post"
+                action="{{ url_for('management.send_payment_link', conversation_id=conversation.id) }}"
+                onsubmit="return confirm('Generate and send this Wompi payment link?');"
+            >
+                <input type="hidden" name="csrf_token" value="{{ management_csrf_token() }}">
+
+                <label for="payment-amount">Amount (COP)</label>
+                <input
+                    id="payment-amount"
+                    type="number"
+                    name="payment_amount"
+                    min="1"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="50000"
+                    required
+                >
+
+                <div class="payment-help">
+                    The amount is fixed in Colombian pesos. The generated link is configured for a single successful payment.
+                </div>
+
+                <button class="btn btn-primary" type="submit" style="width:100%;">
+                    Generate and send
+                </button>
+            </form>
+        </div>
+        {% endif %}
 
         <div class="card sidebar-card">
             <h3 style="margin-top:0;margin-bottom:4px;">Previous conversations</h3>

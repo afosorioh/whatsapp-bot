@@ -20,13 +20,14 @@ from flask import (
 from sqlalchemy import or_
 
 from app import db
-from app.models import Conversation, Customer, Message
+from app.models import Conversation, Customer, Message, Payment
 from app.services.whatsapp_service import (
     download_whatsapp_media,
     send_whatsapp_contact,
     send_whatsapp_media_file,
     send_whatsapp_message,
 )
+from app.services.wompi_service import create_payment_link
 
 
 management_bp = Blueprint(
@@ -790,6 +791,168 @@ def send_contact(conversation_id):
     conversation.updated_at = datetime.utcnow()
     db.session.add(message)
     db.session.commit()
+
+    return redirect(
+        url_for(
+            "management.conversation_detail",
+            conversation_id=conversation.id,
+        )
+    )
+
+
+@management_bp.route(
+    "/conversation/<int:conversation_id>/payment-link",
+    methods=["POST"],
+)
+@management_required
+def send_payment_link(conversation_id):
+    if not _valid_csrf():
+        abort(400, description="Invalid CSRF token")
+
+    conversation = db.session.get(Conversation, conversation_id)
+
+    if not conversation:
+        abort(404)
+
+    if (
+        not conversation.human_handoff
+        or conversation.current_state == "CLOSED"
+    ):
+        flash(
+            "This conversation is no longer assigned to an advisor.",
+            "warning",
+        )
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    raw_amount = (request.form.get("payment_amount") or "").strip()
+
+    try:
+        amount_cop = int(raw_amount)
+    except ValueError:
+        amount_cop = 0
+
+    if amount_cop <= 0:
+        flash("Enter a valid payment amount in COP.", "warning")
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    customer_name = _display_name(conversation)
+    internal_reference = (
+        f"WOMPI-LINK-{conversation.id}-"
+        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-"
+        f"{secrets.token_hex(3)}"
+    )
+
+    try:
+        wompi_link = create_payment_link(
+            amount_cop=amount_cop,
+            name=f"Pago WhatsApp - {customer_name}",
+            description=(
+                f"Pago solicitado por Cervecería Libre "
+                f"para {customer_name}"
+            ),
+        )
+    except Exception as exc:
+        current_app.logger.exception("Unable to create Wompi payment link")
+        flash(f"Wompi payment link creation failed: {exc}", "danger")
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    payment = Payment(
+        order_id=None,
+        provider="wompi",
+        reference=internal_reference,
+        payment_url=wompi_link["url"],
+        amount=amount_cop,
+        currency="COP",
+        status="PENDING",
+        provider_transaction_id=wompi_link["id"],
+        raw_payload={
+            "conversation_id": conversation.id,
+            "environment": wompi_link["environment"],
+            "request": wompi_link["request"],
+            "response": wompi_link["response"],
+        },
+    )
+    db.session.add(payment)
+    db.session.commit()
+
+    payment_message = (
+        "💳 *Enlace de pago Wompi*\n"
+        f"Valor: *${amount_cop:,.0f} COP*\n\n"
+        "Puedes realizar el pago de forma segura en el siguiente enlace:\n"
+        f"{wompi_link['url']}"
+    )
+
+    try:
+        response = send_whatsapp_message(
+            conversation.whatsapp_number,
+            payment_message,
+        )
+    except Exception as exc:
+        current_app.logger.exception(
+            "Wompi link created but WhatsApp delivery failed"
+        )
+        payment.status = "CREATED_NOT_SENT"
+        payload = dict(payment.raw_payload or {})
+        payload["whatsapp_delivery_error"] = str(exc)
+        payment.raw_payload = payload
+        db.session.commit()
+
+        flash(
+            "The Wompi link was created, but WhatsApp delivery failed. "
+            f"Link: {wompi_link['url']} — Error: {exc}",
+            "danger",
+        )
+        return redirect(
+            url_for(
+                "management.conversation_detail",
+                conversation_id=conversation.id,
+            )
+        )
+
+    whatsapp_message_id = _extract_whatsapp_message_id(response)
+
+    message = Message(
+        conversation_id=conversation.id,
+        whatsapp_message_id=whatsapp_message_id,
+        direction="outbound",
+        message_type="text",
+        content=payment_message,
+        raw_payload={
+            "source": "management_portal",
+            "payment_id": payment.id,
+            "payment_reference": internal_reference,
+            "wompi_payment_link_id": wompi_link["id"],
+            "payment_url": wompi_link["url"],
+            "amount_cop": amount_cop,
+        },
+    )
+
+    payload = dict(payment.raw_payload or {})
+    payload["whatsapp_message_id"] = whatsapp_message_id
+    payment.raw_payload = payload
+    conversation.updated_at = datetime.utcnow()
+    db.session.add(message)
+    db.session.commit()
+
+    flash(
+        f"Payment link for ${amount_cop:,.0f} COP generated and sent.",
+        "success",
+    )
 
     return redirect(
         url_for(
