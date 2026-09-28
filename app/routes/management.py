@@ -541,7 +541,10 @@ def conversation_payments(conversation_id):
             continue
 
         raw_payload = dict(payment.raw_payload or {})
-        if not raw_payload.get("captured_transaction_id"):
+        if not (
+            raw_payload.get("captured_transaction_id")
+            or raw_payload.get("redirect_transaction_candidate")
+        ):
             continue
 
         try:
