@@ -55,7 +55,10 @@ def _valid_wompi_signature(payload):
     raw = "".join(values) + str(timestamp) + str(secret)
     calculated = hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    return hmac.compare_digest(calculated, str(supplied_checksum))
+    return hmac.compare_digest(
+        calculated.lower(),
+        str(supplied_checksum).lower(),
+    )
 
 
 def _payment_link_id(payment):
