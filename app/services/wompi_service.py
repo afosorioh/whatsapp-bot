@@ -42,7 +42,12 @@ def _wompi_private_key():
     return str(private_key)
 
 
-def create_payment_link(amount_cop, name, description=None):
+def create_payment_link(
+    amount_cop,
+    name,
+    description=None,
+    redirect_url=None,
+):
     """Create a fixed-value, single-use Wompi payment link."""
     environment = _wompi_environment()
     private_key = _wompi_private_key()
@@ -63,6 +68,9 @@ def create_payment_link(amount_cop, name, description=None):
         "currency": "COP",
         "amount_in_cents": amount_cop * 100,
     }
+
+    if redirect_url:
+        payload["redirect_url"] = str(redirect_url)
 
     response = requests.post(
         f"{base_url}/payment_links",
@@ -105,5 +113,54 @@ def create_payment_link(amount_cop, name, description=None):
         "environment": environment,
         "amount_cop": amount_cop,
         "request": payload,
+        "response": data,
+    }
+
+
+
+def get_transaction(transaction_id):
+    """Get the current state of a Wompi transaction from the backend."""
+    environment = _wompi_environment()
+    private_key = _wompi_private_key()
+    base_url = WOMPI_BASE_URLS[environment]
+
+    transaction_id = str(transaction_id or "").strip()
+
+    if not transaction_id:
+        raise ValueError("Wompi transaction ID is required")
+
+    response = requests.get(
+        f"{base_url}/transactions/{transaction_id}",
+        headers={
+            "Authorization": f"Bearer {private_key}",
+        },
+        timeout=30,
+    )
+
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+            error_message = (
+                error_data.get("error", {}).get("message")
+                or error_data.get("message")
+                or response.text
+            )
+        except ValueError:
+            error_message = response.text
+
+        raise RuntimeError(
+            f"Wompi transaction API error {response.status_code}: "
+            f"{error_message}"
+        )
+
+    data = response.json()
+    transaction = data.get("data") or {}
+
+    if not transaction.get("id"):
+        raise RuntimeError("Wompi did not return transaction data")
+
+    return {
+        "environment": environment,
+        "transaction": transaction,
         "response": data,
     }

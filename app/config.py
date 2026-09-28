@@ -52,7 +52,10 @@ class Config:
     WOMPI_ENV = os.getenv("WOMPI_ENV", "sandbox")
     WOMPI_PUBLIC_KEY = os.getenv("WOMPI_PUBLIC_KEY")
     WOMPI_PRIVATE_KEY = os.getenv("WOMPI_PRIVATE_KEY")
-    WOMPI_EVENT_SECRET = os.getenv("WOMPI_EVENT_SECRET")
+    WOMPI_REDIRECT_BASE_URL = os.getenv(
+        "WOMPI_REDIRECT_BASE_URL",
+        "https://gestion.cervecerialibre.com/chatbot/wompi/payment-result"
+    )
 
     # Lightweight internal management inbox authentication.
     # The token is submitted once on the login page and then kept in the

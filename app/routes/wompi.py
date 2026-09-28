@@ -1,161 +1,162 @@
-import hashlib
-import hmac
-
-from flask import Blueprint, current_app, jsonify, request
+from itsdangerous import BadSignature, URLSafeSerializer
+from flask import Blueprint, abort, current_app, render_template, request
 
 from app import db
 from app.models import Payment
+from app.services.wompi_service import get_transaction
 
 
 wompi_bp = Blueprint(
     "wompi",
     __name__,
     url_prefix="/chatbot/wompi",
+    template_folder="../templates",
 )
 
 
 FINAL_PAYMENT_STATUSES = {"APPROVED", "DECLINED", "VOIDED", "ERROR"}
 
 
-def _event_property_value(data, path):
-    value = data
-    for part in str(path).split("."):
-        if not isinstance(value, dict) or part not in value:
-            raise KeyError(path)
-        value = value[part]
-    return value
+def _payment_serializer():
+    secret_key = current_app.config.get("SECRET_KEY")
+    if not secret_key:
+        raise RuntimeError("SECRET_KEY is not configured")
 
-
-def _valid_wompi_signature(payload):
-    secret = current_app.config.get("WOMPI_EVENT_SECRET")
-    if not secret:
-        raise RuntimeError("WOMPI_EVENT_SECRET is not configured")
-
-    signature = payload.get("signature") or {}
-    properties = signature.get("properties") or []
-    supplied_checksum = (
-        request.headers.get("X-Event-Checksum")
-        or signature.get("checksum")
-        or ""
+    return URLSafeSerializer(
+        secret_key,
+        salt="wompi-payment-result",
     )
-    timestamp = payload.get("timestamp")
-    data = payload.get("data") or {}
 
-    if not properties or timestamp is None or not supplied_checksum:
-        return False
 
+def make_payment_result_token(payment_id):
+    return _payment_serializer().dumps({"payment_id": int(payment_id)})
+
+
+def _payment_from_token(token):
     try:
-        values = [
-            str(_event_property_value(data, property_path))
-            for property_path in properties
-        ]
-    except KeyError:
-        return False
+        data = _payment_serializer().loads(token)
+    except BadSignature:
+        abort(404)
 
-    raw = "".join(values) + str(timestamp) + str(secret)
-    calculated = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    payment_id = data.get("payment_id") if isinstance(data, dict) else None
+    payment = db.session.get(Payment, payment_id) if payment_id else None
 
-    return hmac.compare_digest(
-        calculated.lower(),
-        str(supplied_checksum).lower(),
-    )
+    if not payment or payment.provider != "wompi":
+        abort(404)
+
+    return payment
 
 
-def _payment_link_id(payment):
-    payload = dict(payment.raw_payload or {})
+def _expected_payment_link_id(payment):
+    raw_payload = dict(payment.raw_payload or {})
+    link_id = raw_payload.get("wompi_payment_link_id")
 
-    direct = payload.get("wompi_payment_link_id")
-    if direct:
-        return str(direct)
+    if not link_id:
+        response = raw_payload.get("response") or {}
+        link_id = (response.get("data") or {}).get("id")
 
-    response = payload.get("response") or {}
-    response_data = response.get("data") or {}
-    if response_data.get("id"):
-        return str(response_data["id"])
+    if not link_id and payment.payment_url and "/l/" in payment.payment_url:
+        link_id = payment.payment_url.rsplit("/l/", 1)[-1].split("?", 1)[0]
 
-    if payment.payment_url and "/l/" in payment.payment_url:
-        return payment.payment_url.rsplit("/l/", 1)[-1].split("?", 1)[0]
-
-    # Before a transaction event arrives, the current implementation stores
-    # the Wompi payment-link ID in provider_transaction_id.
-    if payment.provider_transaction_id:
-        return str(payment.provider_transaction_id)
-
-    return None
+    return str(link_id) if link_id else None
 
 
-def _find_payment_by_link_id(payment_link_id):
-    candidates = (
-        Payment.query
-        .filter_by(provider="wompi")
-        .order_by(Payment.created_at.desc(), Payment.id.desc())
-        .limit(500)
-        .all()
-    )
-
-    for payment in candidates:
-        if _payment_link_id(payment) == str(payment_link_id):
-            return payment
-
-    return None
-
-
-@wompi_bp.route("/events", methods=["POST"])
-def receive_wompi_event():
-    payload = request.get_json(silent=True) or {}
-
-    try:
-        if not _valid_wompi_signature(payload):
-            current_app.logger.warning("Rejected invalid Wompi event signature")
-            return jsonify({"status": "invalid signature"}), 401
-    except RuntimeError as exc:
-        current_app.logger.error(str(exc))
-        return jsonify({"status": "configuration error"}), 503
-
-    if payload.get("event") != "transaction.updated":
-        return jsonify({"status": "ignored"}), 200
-
-    transaction = (payload.get("data") or {}).get("transaction") or {}
-    payment_link_id = transaction.get("payment_link_id")
-
-    if not payment_link_id:
-        # This webhook belongs to the whole Wompi account. Transactions that
-        # were not created from a payment link are intentionally ignored.
-        return jsonify({"status": "ignored"}), 200
-
-    payment = _find_payment_by_link_id(payment_link_id)
-
-    if not payment:
-        current_app.logger.info(
-            "Wompi transaction %s belongs to unknown payment link %s",
-            transaction.get("id"),
-            payment_link_id,
-        )
-        return jsonify({"status": "not found"}), 200
-
-    status = str(transaction.get("status") or "PENDING").upper()
+def update_payment_from_transaction(payment, transaction_result):
+    transaction = transaction_result.get("transaction") or {}
     transaction_id = transaction.get("id")
 
+    if not transaction_id:
+        raise RuntimeError("Wompi transaction ID is missing")
+
+    expected_link_id = _expected_payment_link_id(payment)
+    transaction_link_id = transaction.get("payment_link_id")
+
+    if (
+        expected_link_id
+        and transaction_link_id
+        and str(expected_link_id) != str(transaction_link_id)
+    ):
+        raise RuntimeError("Transaction does not belong to this payment link")
+
+    amount_in_cents = transaction.get("amount_in_cents")
+    if amount_in_cents is not None:
+        expected_amount = int(payment.amount or 0) * 100
+        if int(amount_in_cents) != expected_amount:
+            raise RuntimeError("Transaction amount does not match payment")
+
+    currency = transaction.get("currency")
+    if currency and str(currency).upper() != str(payment.currency or "COP").upper():
+        raise RuntimeError("Transaction currency does not match payment")
+
     raw_payload = dict(payment.raw_payload or {})
-    raw_payload["wompi_payment_link_id"] = str(payment_link_id)
     raw_payload["transaction"] = transaction
-    raw_payload["last_event"] = payload
+    raw_payload["transaction_lookup_response"] = transaction_result.get("response")
+    raw_payload["transaction_environment"] = transaction_result.get("environment")
+    raw_payload["captured_transaction_id"] = str(transaction_id)
 
-    payment.status = status
-    payment.provider_transaction_id = transaction_id or payment.provider_transaction_id
+    payment.provider_transaction_id = str(transaction_id)
+    payment.status = str(transaction.get("status") or "PENDING").upper()
     payment.raw_payload = raw_payload
+
+    return payment.status
+
+
+def refresh_payment_transaction(payment):
+    transaction_id = payment.provider_transaction_id
+    raw_payload = dict(payment.raw_payload or {})
+    link_id = _expected_payment_link_id(payment)
+
+    # Before Wompi redirects the customer, provider_transaction_id stores the
+    # link ID. Only query /transactions after a real transaction ID has been
+    # captured and persisted in raw_payload.
+    captured_id = raw_payload.get("captured_transaction_id")
+    candidate_id = raw_payload.get("redirect_transaction_candidate")
+
+    if captured_id:
+        transaction_id = captured_id
+    elif candidate_id:
+        transaction_id = candidate_id
+    elif transaction_id and link_id and str(transaction_id) == str(link_id):
+        return payment.status
+
+    if not transaction_id:
+        return payment.status
+
+    result = get_transaction(transaction_id)
+    status = update_payment_from_transaction(payment, result)
     db.session.commit()
+    return status
 
-    current_app.logger.info(
-        "Wompi payment %s updated to %s (transaction %s)",
-        payment.id,
-        status,
-        transaction_id,
+
+@wompi_bp.route("/payment-result/<token>", methods=["GET"])
+def payment_result(token):
+    payment = _payment_from_token(token)
+    transaction_id = (request.args.get("id") or "").strip()
+    error = None
+
+    if transaction_id:
+        raw_payload = dict(payment.raw_payload or {})
+        raw_payload["redirect_transaction_candidate"] = transaction_id
+        payment.raw_payload = raw_payload
+        db.session.commit()
+
+        try:
+            result = get_transaction(transaction_id)
+            update_payment_from_transaction(payment, result)
+            db.session.commit()
+        except Exception as exc:
+            current_app.logger.exception(
+                "Unable to verify redirected Wompi transaction %s",
+                transaction_id,
+            )
+            error = str(exc)
+    else:
+        error = "Wompi did not provide a transaction ID in the redirect."
+
+    return render_template(
+        "wompi/payment_result.html",
+        payment=payment,
+        transaction_id=transaction_id or payment.provider_transaction_id,
+        error=error,
+        is_final=(payment.status or "").upper() in FINAL_PAYMENT_STATUSES,
     )
-
-    return jsonify({
-        "status": "updated",
-        "payment_id": payment.id,
-        "payment_status": status,
-        "final": status in FINAL_PAYMENT_STATUSES,
-    }), 200

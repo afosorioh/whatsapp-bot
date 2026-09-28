@@ -28,6 +28,11 @@ from app.services.whatsapp_service import (
     send_whatsapp_message,
 )
 from app.services.wompi_service import create_payment_link
+from app.routes.wompi import (
+    FINAL_PAYMENT_STATUSES,
+    make_payment_result_token,
+    refresh_payment_transaction,
+)
 
 
 management_bp = Blueprint(
@@ -529,11 +534,32 @@ def conversation_payments(conversation_id):
     if not conversation:
         abort(404)
 
+    payments = _conversation_payments(conversation.id)
+
+    for payment in payments:
+        if (payment.status or "").upper() in FINAL_PAYMENT_STATUSES:
+            continue
+
+        raw_payload = dict(payment.raw_payload or {})
+        if not (
+            raw_payload.get("captured_transaction_id")
+            or raw_payload.get("redirect_transaction_candidate")
+        ):
+            continue
+
+        try:
+            refresh_payment_transaction(payment)
+        except Exception:
+            current_app.logger.exception(
+                "Unable to refresh Wompi payment %s",
+                payment.id,
+            )
+
     return jsonify({
         "conversation_id": conversation.id,
         "payments": [
             _serialize_payment(payment)
-            for payment in _conversation_payments(conversation.id)
+            for payment in payments
         ],
     })
 
@@ -916,6 +942,28 @@ def send_payment_link(conversation_id):
         f"{secrets.token_hex(3)}"
     )
 
+    payment = Payment(
+        order_id=None,
+        provider="wompi",
+        reference=internal_reference,
+        amount=amount_cop,
+        currency="COP",
+        status="CREATING",
+        raw_payload={
+            "conversation_id": conversation.id,
+            "environment": current_app.config.get("WOMPI_ENV", "sandbox"),
+        },
+    )
+    db.session.add(payment)
+    db.session.commit()
+
+    redirect_base = (
+        current_app.config.get("WOMPI_REDIRECT_BASE_URL")
+        or "https://gestion.cervecerialibre.com/chatbot/wompi/payment-result"
+    ).rstrip("/")
+    result_token = make_payment_result_token(payment.id)
+    redirect_url = f"{redirect_base}/{result_token}"
+
     try:
         wompi_link = create_payment_link(
             amount_cop=amount_cop,
@@ -924,9 +972,12 @@ def send_payment_link(conversation_id):
                 f"Pago solicitado por Cervecería Libre "
                 f"para {customer_name}"
             ),
+            redirect_url=redirect_url,
         )
     except Exception as exc:
         current_app.logger.exception("Unable to create Wompi payment link")
+        db.session.delete(payment)
+        db.session.commit()
         flash(f"Wompi payment link creation failed: {exc}", "danger")
         return redirect(
             url_for(
@@ -935,23 +986,17 @@ def send_payment_link(conversation_id):
             )
         )
 
-    payment = Payment(
-        order_id=None,
-        provider="wompi",
-        reference=internal_reference,
-        payment_url=wompi_link["url"],
-        amount=amount_cop,
-        currency="COP",
-        status="PENDING",
-        provider_transaction_id=wompi_link["id"],
-        raw_payload={
-            "conversation_id": conversation.id,
-            "environment": wompi_link["environment"],
-            "request": wompi_link["request"],
-            "response": wompi_link["response"],
-        },
-    )
-    db.session.add(payment)
+    payment.payment_url = wompi_link["url"]
+    payment.status = "PENDING"
+    payment.provider_transaction_id = wompi_link["id"]
+    payment.raw_payload = {
+        "conversation_id": conversation.id,
+        "environment": wompi_link["environment"],
+        "wompi_payment_link_id": wompi_link["id"],
+        "redirect_url": redirect_url,
+        "request": wompi_link["request"],
+        "response": wompi_link["response"],
+    }
     db.session.commit()
 
     payment_message = (
