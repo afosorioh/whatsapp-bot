@@ -225,6 +225,68 @@
         font-weight: 700;
     }
 
+    .payment-status-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .payment-status-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+    }
+
+    .payment-status-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+
+    .payment-status-badge {
+        padding: 4px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        background: #eef2f6;
+        color: #344054;
+    }
+
+    .payment-status-badge.approved {
+        background: #dcfae6;
+        color: #067647;
+    }
+
+    .payment-status-badge.declined,
+    .payment-status-badge.error,
+    .payment-status-badge.voided {
+        background: #fee4e2;
+        color: #b42318;
+    }
+
+    .payment-status-badge.pending,
+    .payment-status-badge.created_not_sent {
+        background: #fff3cd;
+        color: #856404;
+    }
+
+    .payment-status-meta {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+    }
+
+    .payment-status-link {
+        display: inline-block;
+        margin-top: 5px;
+        font-size: 12px;
+        font-weight: 700;
+    }
     .sidebar-card { padding: 16px; }
     .sidebar-card + .sidebar-card { margin-top: 16px; }
 
@@ -504,6 +566,41 @@
         </div>
         {% endif %}
 
+        {% if payments %}
+        <div class="card sidebar-card">
+            <h3 style="margin-top:0;margin-bottom:4px;">Payment status</h3>
+            <div class="muted" style="font-size:13px;margin-bottom:8px;">
+                Wompi links generated for this conversation. Status updates automatically.
+            </div>
+
+            <div id="payment-status-list" class="payment-status-list">
+                {% for payment in payments %}
+                <div class="payment-status-item" data-payment-id="{{ payment.id }}">
+                    <div class="payment-status-head">
+                        <strong>${{ "{:,.0f}".format(payment.amount) }} COP</strong>
+                        <span class="payment-status-badge {{ payment.status|lower }}">
+                            {{ payment.status }}
+                        </span>
+                    </div>
+                    <div class="payment-status-meta">
+                        Link ID: {{ payment.payment_link_id or '—' }}
+                        {% if payment.transaction_id %}
+                        <br>Transaction: {{ payment.transaction_id }}
+                        {% endif %}
+                        {% if payment.payment_method_type %}
+                        <br>Method: {{ payment.payment_method_type }}
+                        {% endif %}
+                    </div>
+                    {% if payment.payment_url %}
+                    <a class="payment-status-link" href="{{ payment.payment_url }}" target="_blank" rel="noopener">
+                        Open Wompi link
+                    </a>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
         <div class="card sidebar-card">
             <h3 style="margin-top:0;margin-bottom:4px;">Previous conversations</h3>
             <div class="muted" style="font-size:13px;margin-bottom:12px;">
@@ -599,6 +696,79 @@
 <script>
 (function () {
     const container = document.getElementById('messages');
+    const paymentStatusList = document.getElementById('payment-status-list');
+
+    function paymentBadgeClass(status) {
+        return 'payment-status-badge ' + String(status || 'PENDING').toLowerCase();
+    }
+
+    function renderPaymentStatuses(payments) {
+        if (!paymentStatusList) return;
+
+        paymentStatusList.innerHTML = '';
+
+        (payments || []).forEach(function (payment) {
+            const item = document.createElement('div');
+            item.className = 'payment-status-item';
+            item.dataset.paymentId = payment.id;
+
+            const head = document.createElement('div');
+            head.className = 'payment-status-head';
+
+            const amount = document.createElement('strong');
+            amount.textContent = new Intl.NumberFormat(
+                'es-CO',
+                {style: 'currency', currency: 'COP', maximumFractionDigits: 0}
+            ).format(payment.amount || 0);
+
+            const badge = document.createElement('span');
+            badge.className = paymentBadgeClass(payment.status);
+            badge.textContent = payment.status || 'PENDING';
+
+            head.appendChild(amount);
+            head.appendChild(badge);
+
+            const meta = document.createElement('div');
+            meta.className = 'payment-status-meta';
+            const details = [
+                'Link ID: ' + (payment.payment_link_id || '—'),
+                payment.transaction_id ? 'Transaction: ' + payment.transaction_id : '',
+                payment.payment_method_type ? 'Method: ' + payment.payment_method_type : ''
+            ].filter(Boolean);
+            meta.innerHTML = details.map(escapeHtml).join('<br>');
+
+            item.appendChild(head);
+            item.appendChild(meta);
+
+            if (payment.payment_url) {
+                const link = document.createElement('a');
+                link.className = 'payment-status-link';
+                link.href = payment.payment_url;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = 'Open Wompi link';
+                item.appendChild(link);
+            }
+
+            paymentStatusList.appendChild(item);
+        });
+    }
+
+    async function pollPaymentStatuses() {
+        if (!paymentStatusList) return;
+
+        try {
+            const response = await fetch(
+                '{{ url_for("management.conversation_payments", conversation_id=conversation.id) }}',
+                {headers: {'Accept': 'application/json'}}
+            );
+            if (!response.ok) return;
+            const data = await response.json();
+            renderPaymentStatuses(data.payments || []);
+        } catch (error) {
+            console.debug('Payment status polling failed', error);
+        }
+    }
     const composer = document.getElementById('message-composer');
     const attachmentInput = document.getElementById('attachment-input');
     const attachmentButton = document.getElementById('attachment-button');
@@ -772,6 +942,9 @@
     if (container) {
         scrollToBottom();
         setInterval(poll, 3000);
+        if (paymentStatusList) {
+            setInterval(pollPaymentStatuses, 5000);
+        }
     }
 
     const contactButton = document.getElementById('contact-button');
