@@ -45,4 +45,7 @@ def create_app():
     from app.routes.management_inventory import management_inventory_bp
     app.register_blueprint(management_inventory_bp)
 
+    from app.routes.wompi import wompi_bp
+    app.register_blueprint(wompi_bp)
+
     return app
