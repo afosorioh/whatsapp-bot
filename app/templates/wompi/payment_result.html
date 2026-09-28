@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Resultado del pago · Cervecería Libre</title>
-    {% if not is_final and not error %}
+    {% if not is_final and transaction_id %}
     <meta http-equiv="refresh" content="4">
     {% endif %}
     <style>
